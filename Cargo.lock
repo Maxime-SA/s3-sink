@@ -1516,15 +1516,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iceberg-sink"
-version = "0.1.0"
-dependencies = [
- "iceberg",
- "rdkafka",
- "schema-registry-client",
-]
-
-[[package]]
 name = "icu_collections"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1802,6 +1793,15 @@ dependencies = [
  "serde_json",
  "unicode-general-category",
  "uuid-simd",
+]
+
+[[package]]
+name = "kafka-sink"
+version = "0.1.0"
+dependencies = [
+ "iceberg",
+ "rdkafka",
+ "schema-registry-client",
 ]
 
 [[package]]
