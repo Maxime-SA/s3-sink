@@ -14,7 +14,7 @@ pub struct KafkaConfig {
 
 pub struct FileConfig {
     pub scratch_directory: PathBuf, // directory for writing files before uploading
-    pub target_file_size_bytes: usize, // uncompressed target file size in bytes
+    pub target_file_size_b: usize,  // uncompressed target file size in bytes
     pub compression_level: i32,     // compression level used by zstd
 }
 

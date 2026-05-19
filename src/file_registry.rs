@@ -85,12 +85,35 @@ impl SealedFile {
     pub fn offsets(self) -> TopicOffsets {
         self.offsets.offsets()
     }
+
+    pub fn into_parts(self) -> (PathBuf, TopicOffsets) {
+        (self.path, self.offsets.offsets())
+    }
+}
+
+/*
+Wrapper to track how many compressed bytes are written
+*/
+struct CountingWriter<W: Write> {
+    inner: W,
+    compressed_size_b: usize,
+}
+impl<W: Write> Write for CountingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.compressed_size_b += n;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(self.inner.flush()?)
+    }
 }
 
 pub struct ActiveFile {
     path: PathBuf,
-    writer: Encoder<'static, BufWriter<File>>,
-    size_bytes: usize,
+    writer: Encoder<'static, CountingWriter<BufWriter<File>>>,
+    raw_size_b: usize,
     record_count: usize,
     created_at: Instant,
 }
@@ -100,19 +123,24 @@ impl ActiveFile {
 
         let file = File::options().create(true).append(true).open(&path)?;
 
-        let writer = Encoder::new(BufWriter::new(file), compression_level)?;
+        let counting_writer = CountingWriter {
+            inner: BufWriter::new(file),
+            compressed_size_b: 0,
+        };
+
+        let writer = Encoder::new(counting_writer, compression_level)?;
 
         Ok(ActiveFile {
             path,
             writer,
-            size_bytes: 0,
+            raw_size_b: 0,
             record_count: 0,
             created_at: Instant::now(),
         })
     }
 
     pub fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
-        self.size_bytes += bytes.len();
+        self.raw_size_b += bytes.len();
         self.writer.write_all(bytes)?;
         Ok(())
     }
@@ -127,7 +155,11 @@ impl ActiveFile {
         Ok(())
     }
 
-    pub fn size(&self) -> usize {
-        self.size_bytes
+    pub fn raw_size_b(&self) -> usize {
+        self.raw_size_b
+    }
+
+    pub fn compressed_size_b(&self) -> usize {
+        self.writer.get_ref().compressed_size_b
     }
 }

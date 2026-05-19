@@ -1,8 +1,16 @@
-use std::pin::Pin;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    pin::Pin,
+};
 
 use tracing::info;
 
-use crate::{Result, file_registry::SealedFile, offset_registry::TopicOffsets};
+use crate::{
+    Result,
+    file_registry::SealedFile,
+    offset_registry::{OffsetRegistry, TopicOffsets},
+};
 
 /*
 Pin:
@@ -15,7 +23,24 @@ Box:
 dyn:
 - Trait objects (i.e. type erasure).
 */
-pub type BoxFuture = Pin<Box<dyn Future<Output = Result<TopicOffsets>>>>;
+pub type BoxFuture = Pin<Box<dyn Future<Output = Result<UploadResult>>>>;
+
+pub struct UploadResult {
+    file_to_gc: PathBuf,
+    offsets_to_commit: TopicOffsets,
+}
+impl UploadResult {
+    pub fn new(file_to_gc: PathBuf, offsets_to_commit: TopicOffsets) -> Self {
+        UploadResult {
+            file_to_gc,
+            offsets_to_commit,
+        }
+    }
+
+    pub fn into_parts(self) -> (PathBuf, TopicOffsets) {
+        (self.file_to_gc, self.offsets_to_commit)
+    }
+}
 
 pub trait Uploader {
     fn upload(&self, sealed_file: SealedFile) -> BoxFuture;
@@ -24,7 +49,6 @@ pub trait Uploader {
 pub struct S3Upload {
     client: aws_sdk_s3::Client,
 }
-
 impl S3Upload {
     fn new() -> S3Upload {
         todo!()
@@ -35,7 +59,10 @@ impl Uploader for S3Upload {
     fn upload(&self, sealed_file: SealedFile) -> BoxFuture {
         Box::pin(async {
             info!("uploading to s3");
-            Ok(sealed_file.offsets())
+
+            let (file_to_gc, offsets_to_commit) = sealed_file.into_parts();
+
+            Ok(UploadResult::new(file_to_gc, offsets_to_commit))
         })
     }
 }
@@ -45,7 +72,10 @@ impl Uploader for MockUploader {
     fn upload(&self, sealed_file: SealedFile) -> BoxFuture {
         Box::pin(async {
             info!("sleeping for X seconds");
-            Ok(sealed_file.offsets())
+
+            let (file_to_gc, offsets_to_commit) = sealed_file.into_parts();
+
+            Ok(UploadResult::new(file_to_gc, offsets_to_commit))
         })
     }
 }

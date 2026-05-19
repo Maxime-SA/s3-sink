@@ -12,6 +12,7 @@ impl JsonSerializer {
         }
     }
 
+    // depending on payload size, we may want to do this asynchronously
     pub fn serialize<M: Message>(&mut self, record: &M, decoder: &RecordDecoder) -> Option<&[u8]> {
         self.buf.clear();
 

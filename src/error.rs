@@ -19,7 +19,7 @@ impl From<KafkaError> for SinkError {
     }
 }
 
-impl From<io::Error> for SinkError {
+impl From<std::io::Error> for SinkError {
     fn from(value: io::Error) -> Self {
         SinkError::IOError(value.to_string())
     }

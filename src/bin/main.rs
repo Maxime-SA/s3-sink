@@ -40,7 +40,7 @@ fn get_config() -> SinkConfig {
 
     let files_config = FileConfig {
         scratch_directory: "./tmp".into(),
-        target_file_size_bytes: 4096,
+        target_file_size_b: 4096,
         compression_level: 3,
     };
 

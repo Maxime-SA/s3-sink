@@ -11,7 +11,7 @@ use std::collections::HashMap;
 pub struct Processor<'a, U: Uploader> {
     uploader: U,
     topics_config: HashMap<&'a str, &'a TopicConfig>,
-    target_file_size_bytes: usize,
+    target_file_size_b: usize,
     max_concurrent_uploads: usize,
 }
 
@@ -19,7 +19,7 @@ impl<'a, U: Uploader> Processor<'a, U> {
     pub fn new(
         uploader: U,
         input_topics: &'a Vec<(TopicConfig, Vec<String>)>,
-        target_file_size_bytes: usize,
+        target_file_size_b: usize,
         max_concurrent_uploads: usize,
     ) -> Self {
         let topics_config =
@@ -35,7 +35,7 @@ impl<'a, U: Uploader> Processor<'a, U> {
         Processor {
             uploader,
             topics_config,
-            target_file_size_bytes,
+            target_file_size_b,
             max_concurrent_uploads,
         }
     }
@@ -50,6 +50,10 @@ impl<'a, U: Uploader> Processor<'a, U> {
                 )))?;
 
         Ok((&config.decoder, &config.router))
+    }
+
+    fn can_upload(&self, raw_size_b: usize, in_flight_uploads: usize) -> bool {
+        raw_size_b >= self.target_file_size_b && in_flight_uploads < self.max_concurrent_uploads
     }
 
     pub fn process(
@@ -68,9 +72,7 @@ impl<'a, U: Uploader> Processor<'a, U> {
             file.write_all(bytes)?;
             file.inc_record_count();
 
-            if file.size() >= self.target_file_size_bytes
-                && upload_ftrs.len() < self.max_concurrent_uploads
-            {
+            if self.can_upload(file.raw_size_b(), upload_ftrs.len()) {
                 let sealed_file = registry.seal(&file_id)?;
                 upload_ftrs.push(self.uploader.upload(sealed_file));
             }

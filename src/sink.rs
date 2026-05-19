@@ -1,11 +1,14 @@
 use crate::file_registry::FileRegistry;
 use crate::json_serializer::JsonSerializer;
-use crate::kafka_consumer::init_kafka_consumer;
+use crate::kafka_consumer::{SpecialContext, init_kafka_consumer};
 use crate::offset_registry::OffsetRegistry;
 use crate::processor::Processor;
 use crate::uploader::Uploader;
-use crate::{Result, SinkConfig, TimersConfig};
+use crate::{Result, SinkConfig, TimersConfig, UploadResult};
 use futures::stream::{FuturesUnordered, StreamExt};
+use rdkafka::TopicPartitionList;
+use rdkafka::consumer::{Consumer, StreamConsumer};
+use std::fs;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::select;
@@ -31,7 +34,7 @@ impl Sink {
         // kafka stream consumer
         let consumer = init_kafka_consumer(&self.config.kafka)?;
 
-        // local files state
+        // registry for active files
         let mut registry = FileRegistry::new(
             self.config.files.scratch_directory.as_path(),
             self.config.files.compression_level,
@@ -51,11 +54,12 @@ impl Sink {
         let mut processor = Processor::new(
             uploader,
             &self.config.kafka.input_topics,
-            self.config.files.target_file_size_bytes,
+            self.config.files.target_file_size_b,
             self.config.uploads.max_concurrent_uploads,
         );
 
-        let mut offsets_to_commit = OffsetRegistry::new();
+        // registry to track offsets that can be safely committed
+        let mut commit_registry = OffsetRegistry::new();
 
         loop {
             select! {
@@ -69,8 +73,7 @@ impl Sink {
 
                 // 1. an upload to S3 has completed
                 Some(result) = upload_ftrs.next() => {
-                    let offsets = result?;
-                    offsets_to_commit.combine(offsets);
+                    Self::process_upload_result(result, &mut commit_registry)?;
                 }
 
                 // 2. timer interrupt to commit offsets
@@ -95,6 +98,42 @@ impl Sink {
 
             }
         }
+    }
+
+    fn commit_offsets(
+        consumer: &StreamConsumer<SpecialContext>,
+        registry: &mut OffsetRegistry,
+    ) -> Result<()> {
+        let offsets = registry.offsets();
+
+        let mut topic_partition_list = TopicPartitionList::new();
+
+        for ((topic, partition), offsets) in offsets.iter() {
+            topic_partition_list.add
+        }
+
+        consumer.commit(topic_partition_list, rdkafka::consumer::CommitMode::Async);
+
+        Ok(())
+    }
+
+    fn process_upload_result(
+        result: Result<UploadResult>,
+        registry: &mut OffsetRegistry,
+    ) -> Result<()> {
+        if let Ok(upload_result) = result {
+            let (file_to_gc, offsets_to_commit) = upload_result.into_parts();
+
+            // accumulate offsets
+            registry.combine(offsets_to_commit);
+
+            // garbage collect
+            fs::remove_file(file_to_gc)?;
+        } else {
+            // we need to keep track of the SealedFile or it will be lost
+        }
+
+        Ok(())
     }
 
     fn init_timers(config: &TimersConfig) -> (Interval, Interval, Interval) {
