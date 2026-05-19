@@ -2,15 +2,15 @@ use futures::stream::FuturesUnordered;
 use rdkafka::{Message, consumer::StreamConsumer, message::BorrowedMessage};
 
 use crate::{
-    BoxFuture, Result, TopicConfig, UploadResult, Uploader, error::SinkError, file_io::FilesState,
-    json_serializer::JsonSerializer, kafka_consumer::SpecialContext,
+    BoxFuture, RecordDecoder, Result, TopicConfig, Uploader, error::SinkError,
+    file_registry::FileRegistry, json_serializer::JsonSerializer, kafka_consumer::SpecialContext,
+    record_router::RecordRouter,
 };
 use std::collections::HashMap;
 
 pub struct Processor<'a, U: Uploader> {
-    serializer: JsonSerializer,
     uploader: U,
-    topic_config: HashMap<&'a str, &'a TopicConfig>,
+    topics_config: HashMap<&'a str, &'a TopicConfig>,
     target_file_size_bytes: usize,
     max_concurrent_uploads: usize,
 }
@@ -22,73 +22,67 @@ impl<'a, U: Uploader> Processor<'a, U> {
         target_file_size_bytes: usize,
         max_concurrent_uploads: usize,
     ) -> Self {
-        let topic_config =
+        let topics_config =
             input_topics
                 .iter()
                 .fold(HashMap::new(), |mut acc, (configs, topics)| {
                     topics.iter().for_each(|topic| {
                         acc.insert(topic.as_str(), configs);
                     });
-
                     acc
                 });
 
         Processor {
-            serializer: JsonSerializer::new(),
             uploader,
-            topic_config,
+            topics_config,
             target_file_size_bytes,
             max_concurrent_uploads,
         }
     }
 
-    /*
-    Missing:
-    - Check the topic allowed budget
-    */
+    fn topic_config(&self, topic_name: &str) -> Result<(&RecordDecoder, &RecordRouter)> {
+        let config =
+            self.topics_config
+                .get(topic_name)
+                .copied()
+                .ok_or(SinkError::ConfigurationError(format!(
+                    "missing topic configuration for '{topic_name}'"
+                )))?;
+
+        Ok((&config.decoder, &config.router))
+    }
+
     pub fn process(
         &mut self,
         record: &BorrowedMessage<'_>,
-        state: &mut FilesState,
+        registry: &mut FileRegistry,
         upload_ftrs: &mut FuturesUnordered<BoxFuture>,
+        serializer: &mut JsonSerializer,
     ) -> Result<()> {
-        let topic_name = record.topic();
+        let (decoder, router) = self.topic_config(record.topic())?;
 
-        
+        if let Some(bytes) = serializer.serialize(record, decoder) {
+            let file_id = router.id(record);
 
-        let config = self
-            .topic_config
-            .get(topic_name)
-            .copied()
-            .ok_or(SinkError::KafkaError(format!(
-                "missing record type and partitioner configuration for topic: '{topic_name}'"
-            )))?;
+            let file = registry.get_active_file_or_create(&file_id)?;
+            file.write_all(bytes)?;
+            file.inc_record_count();
 
-            /*
-                We have a stream of records from all topics:
-                - We want to divide this stream into substreams.
-                - Each substream id is a combination of properties from the record:
-                    - topic name
-                    - schema version
-                    - status code 
-             */
-
-        if let Some(bytes) = self.serializer.serialize(record, &config.record_type) {
-            let file_id = config.partitioner.get_file_id(record);
-
-            let offset = record.offset();
-
-            let file_handle = state.active_file(offset, &file_id)?;
-
-            file_handle.write_all(bytes)?;
-            file_handle.update_end_offset(offset);
-
-            if file_handle.size() >= self.target_file_size_bytes
+            if file.size() >= self.target_file_size_bytes
                 && upload_ftrs.len() < self.max_concurrent_uploads
             {
-                let sealed_file = state.seal_file(&file_id)?;
+                let sealed_file = registry.seal(&file_id)?;
                 upload_ftrs.push(self.uploader.upload(sealed_file));
             }
+
+            registry.add_offset(
+                &file_id,
+                record.topic(),
+                record.partition(),
+                record.offset(),
+            )?;
+
+            // topic ingestion budget management
         }
 
         Ok(())

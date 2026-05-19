@@ -1,11 +1,10 @@
 use std::path::PathBuf;
 
-use crate::json_serializer::RecordType;
-use crate::partitioner::Partitioner;
+use crate::{RecordDecoder, record_router::RecordRouter};
 
 pub struct TopicConfig {
-    pub record_type: RecordType,
-    pub partitioner: Partitioner,
+    pub decoder: RecordDecoder,
+    pub router: RecordRouter,
 }
 
 pub struct KafkaConfig {

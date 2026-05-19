@@ -8,6 +8,8 @@ pub enum SinkError {
     KafkaError(String),
     IOError(String),
     S3Error(String),
+    ConfigurationError(String),
+    FileRegistry(String),
     CatchAll(String),
 }
 

@@ -1,5 +1,7 @@
-use crate::file_io::FilesState;
+use crate::file_registry::FileRegistry;
+use crate::json_serializer::JsonSerializer;
 use crate::kafka_consumer::init_kafka_consumer;
+use crate::offset_registry::OffsetRegistry;
 use crate::processor::Processor;
 use crate::uploader::Uploader;
 use crate::{Result, SinkConfig, TimersConfig};
@@ -30,22 +32,20 @@ impl Sink {
         let consumer = init_kafka_consumer(&self.config.kafka)?;
 
         // local files state
-        let mut files_state = FilesState::new(
+        let mut registry = FileRegistry::new(
             self.config.files.scratch_directory.as_path(),
             self.config.files.compression_level,
         );
 
-        /*
-        3 timer interrupts:
-            - fairness_scheduler: manage per-topic consumption budget
-            - commit: commit accumulated offsets
-            - upload: upload dormant files
-         */
-        let (mut fairness_scheduler_tick, mut commit_tick, mut upload_tick) =
-            Self::init_timers(&self.config.timers);
+        // json serializer
+        let mut serializer = JsonSerializer::new();
 
         // pool of futures that upload files to S3
         let mut upload_ftrs = FuturesUnordered::new();
+
+        // timer interrupts
+        let (mut fairness_scheduler_tick, mut commit_tick, mut upload_tick) =
+            Self::init_timers(&self.config.timers);
 
         // record processor
         let mut processor = Processor::new(
@@ -54,6 +54,8 @@ impl Sink {
             self.config.files.target_file_size_bytes,
             self.config.uploads.max_concurrent_uploads,
         );
+
+        let mut offsets_to_commit = OffsetRegistry::new();
 
         loop {
             select! {
@@ -66,8 +68,9 @@ impl Sink {
                 biased;
 
                 // 1. an upload to S3 has completed
-                Some(upload_result) = upload_ftrs.next() => {
-                    todo!()
+                Some(result) = upload_ftrs.next() => {
+                    let offsets = result?;
+                    offsets_to_commit.combine(offsets);
                 }
 
                 // 2. timer interrupt to commit offsets
@@ -87,7 +90,7 @@ impl Sink {
 
                 // 5. process Kafka record
                 maybe_next_record = consumer.recv() => {
-                    processor.process(&maybe_next_record?, &mut files_state, &mut upload_ftrs)?;
+                    processor.process(&maybe_next_record?, &mut registry, &mut upload_ftrs, &mut serializer)?;
                 }
 
             }
@@ -95,11 +98,14 @@ impl Sink {
     }
 
     fn init_timers(config: &TimersConfig) -> (Interval, Interval, Interval) {
+        // manage per-topic consumption budget
         let fairness_scheduler_tick =
             interval(Duration::from_millis(config.fairness_scheduler_tick_ms));
 
+        // commit accumulated offsets
         let commit_tick = interval(Duration::from_millis(config.commit_tick_ms));
 
+        // upload dormant files
         let upload_tick = interval(Duration::from_millis(config.upload_tick_ms));
 
         (fairness_scheduler_tick, commit_tick, upload_tick)
