@@ -2,8 +2,6 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
 
-use rdkafka::TopicPartitionList;
-
 pub type TopicOffsets = HashMap<(String, i32), BinaryHeap<Reverse<i64>>>;
 
 pub struct OffsetRegistry(TopicOffsets);
@@ -34,6 +32,10 @@ impl OffsetRegistry {
             }
         }
     }
+
+    pub fn get_mut_offsets(&mut self) -> &mut TopicOffsets {
+        &mut self.0
+    }
 }
 
 pub struct SealedOffsets(TopicOffsets); // (topic name, partition) -> offsets
@@ -46,27 +48,6 @@ impl SealedOffsets {
 impl From<OffsetRegistry> for SealedOffsets {
     fn from(value: OffsetRegistry) -> Self {
         SealedOffsets(value.0)
-    }
-}
-
-impl From<&mut OffsetRegistry> for TopicPartitionList {
-    fn from(value: &mut OffsetRegistry) -> Self {
-        let mut result = TopicPartitionList::new();
-
-        // need to remove topic and partition key if no longer any item
-
-        for ((topic, partition), offsets) in &mut value.0 {
-            result.add_partition(topic, *partition);
-
-            let offset_to_commit = -1;
-            while let Some(offset) = offsets.peek()
-                && offset.0 == offset_to_commit
-            {
-                
-            }
-        }
-
-        todo!()
     }
 }
 

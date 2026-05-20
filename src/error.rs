@@ -3,13 +3,14 @@ use std::result;
 
 use rdkafka::error::KafkaError;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum SinkError {
     KafkaError(String),
     IOError(String),
     S3Error(String),
     ConfigurationError(String),
     FileRegistry(String),
+    DecoderError(String),
     CatchAll(String),
 }
 

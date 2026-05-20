@@ -1,16 +1,6 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    pin::Pin,
-};
-
+use crate::{Result, file_registry::SealedFile, offset_registry::TopicOffsets};
+use std::{path::PathBuf, pin::Pin};
 use tracing::info;
-
-use crate::{
-    Result,
-    file_registry::SealedFile,
-    offset_registry::{OffsetRegistry, TopicOffsets},
-};
 
 /*
 Pin:
@@ -60,7 +50,8 @@ impl Uploader for S3Upload {
         Box::pin(async {
             info!("uploading to s3");
 
-            let (file_to_gc, _, offsets_to_commit) = sealed_file.into_parts();
+            let (file_to_gc, record_count, raw_size_b, compressed_size_b, offsets_to_commit) =
+                sealed_file.into_parts();
 
             Ok(UploadResult::new(file_to_gc, offsets_to_commit))
         })
@@ -73,7 +64,8 @@ impl Uploader for MockUploader {
         Box::pin(async {
             info!("sleeping for X seconds");
 
-            let (file_to_gc, _, offsets_to_commit) = sealed_file.into_parts();
+            let (file_to_gc, record_count, raw_size_b, compressed_size_b, offsets_to_commit) =
+                sealed_file.into_parts();
 
             Ok(UploadResult::new(file_to_gc, offsets_to_commit))
         })

@@ -1,6 +1,6 @@
 use rdkafka::{Message, message::Headers};
 
-use crate::RecordDecoder;
+use crate::{RecordDecoder, Result, error::SinkError};
 
 pub struct JsonSerializer {
     buf: Vec<u8>,
@@ -12,38 +12,46 @@ impl JsonSerializer {
         }
     }
 
-    // depending on payload size, we may want to do this asynchronously
-    pub fn serialize<M: Message>(&mut self, record: &M, decoder: &RecordDecoder) -> Option<&[u8]> {
+    pub fn serialize<M: Message>(
+        &mut self,
+        record: &M,
+        decoder: &RecordDecoder,
+    ) -> Result<Option<&[u8]>> {
+        let Some(raw_payload) = record.payload() else {
+            return Ok(None);
+        };
+
         self.buf.clear();
 
-        if let Some(raw_payload) = record.payload() {
-            let data_payload = decoder.data_payload(raw_payload);
+        let data_payload = decoder.data_payload(raw_payload).ok_or_else(|| {
+            SinkError::DecoderError(format!(
+                "could not decode record '{}', partition '{}', offset '{}'",
+                record.topic(),
+                record.partition(),
+                record.offset()
+            ))
+        })?;
 
-            self.buf.extend_from_slice(b"{\"data\":");
-            self.buf.extend_from_slice(data_payload);
+        self.buf.extend_from_slice(b"{\"data\":");
+        self.buf.extend_from_slice(data_payload);
 
-            if let Some(headers) = record.headers() {
-                for header in headers.iter() {
-                    // delimiter
-                    self.buf.push(b',');
-                    // write key name
-                    self.buf.extend_from_slice(b"\"x-");
-                    self.buf.extend_from_slice(header.key.as_bytes());
-                    self.buf.extend_from_slice(b"\":\"");
-                    // write value
-                    self.buf.extend_from_slice(header.value.unwrap_or(b""));
-                    self.buf.push(b'"');
-                }
+        if let Some(headers) = record.headers() {
+            for header in headers.iter() {
+                // delimiter
+                self.buf.push(b',');
+                // write key name
+                self.buf.extend_from_slice(b"\"x-");
+                self.buf.extend_from_slice(header.key.as_bytes());
+                self.buf.extend_from_slice(b"\":\"");
+                // write value
+                self.buf.extend_from_slice(header.value.unwrap_or(b""));
+                self.buf.push(b'"');
             }
-
-            self.buf.extend_from_slice(b"}\n");
         }
 
-        if self.buf.len() == 0 {
-            None
-        } else {
-            Some(&self.buf)
-        }
+        self.buf.extend_from_slice(b"}\n");
+
+        Ok(Some(&self.buf))
     }
 }
 
@@ -98,6 +106,7 @@ mod test {
             serializer
                 .serialize(&message, &RecordDecoder::JsonSchemaDecoder)
                 .unwrap()
+                .unwrap()
                 .to_vec(),
         )
         .unwrap();
@@ -123,6 +132,7 @@ mod test {
             serializer
                 .serialize(&message, &RecordDecoder::StringDecoder)
                 .unwrap()
+                .unwrap()
                 .to_vec(),
         )
         .unwrap();
@@ -147,6 +157,7 @@ mod test {
             serializer
                 .serialize(&message, &RecordDecoder::StringDecoder)
                 .unwrap()
+                .unwrap()
                 .to_vec(),
         )
         .unwrap();
@@ -163,9 +174,37 @@ mod test {
         let headers = make_headers(None);
         let message = make_message(None, Some(headers));
 
-        let actual_result = serializer.serialize(&message, &RecordDecoder::StringDecoder);
+        let actual_result = serializer
+            .serialize(&message, &RecordDecoder::StringDecoder)
+            .unwrap();
 
         let expected_result = None;
+
+        assert_eq!(expected_result, actual_result);
+    }
+
+    #[test]
+    fn test_decoder_error() {
+        let mut serializer = JsonSerializer::new();
+
+        // payload without magic bytes
+        let mut payload = vec![];
+        payload.extend_from_slice(b"\"t\"");
+
+        let headers = make_headers(None);
+        let message = make_message(Some(payload.to_vec()), Some(headers));
+
+        let actual_result = serializer
+            .serialize(&message, &RecordDecoder::JsonSchemaDecoder)
+            .err()
+            .unwrap();
+
+        let expected_result = SinkError::DecoderError(format!(
+            "could not decode record '{}', partition '{}', offset '{}'",
+            message.topic(),
+            message.partition(),
+            message.offset(),
+        ));
 
         assert_eq!(expected_result, actual_result);
     }

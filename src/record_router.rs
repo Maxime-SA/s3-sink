@@ -18,6 +18,9 @@ pub enum RecordRouter {
     TopicVersionStatusCode,
 }
 impl RecordRouter {
+    /*
+    We can use a local cache as it is wasteful to generate these FileId on every record
+     */
     pub fn id<M: Message>(&self, record: &M) -> FileId {
         match self {
             Self::TopicVersion => Self::group_by_topic_version(record),

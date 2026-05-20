@@ -14,23 +14,23 @@ use std::{
 use uuid::Uuid;
 use zstd::Encoder;
 
-pub struct FileRegistry {
-    files: HashMap<FileId, (ActiveFile, OffsetRegistry)>,
-    directory: PathBuf,
+pub struct FileRegistry<'a> {
+    directory: &'a Path,
     compression_level: i32,
+    files: HashMap<FileId, (ActiveFile, OffsetRegistry)>,
 }
-impl FileRegistry {
-    pub fn new(directory: &Path, compression_level: i32) -> Self {
+impl<'a> FileRegistry<'a> {
+    pub fn new(directory: &'a Path, compression_level: i32) -> Self {
         FileRegistry {
-            files: HashMap::new(),
-            directory: directory.into(),
+            directory: directory,
             compression_level,
+            files: HashMap::new(),
         }
     }
 
-    pub fn get_active_file_or_create(&mut self, id: &FileId) -> Result<&mut ActiveFile> {
+    pub fn get_mut_active_file_or_create(&mut self, id: &FileId) -> Result<&mut ActiveFile> {
         if !self.files.contains_key(id) {
-            let file = ActiveFile::new(self.directory.as_path(), self.compression_level)?;
+            let file = ActiveFile::new(self.directory, self.compression_level)?;
             self.files.insert(id.clone(), (file, OffsetRegistry::new()));
         }
 
@@ -38,14 +38,21 @@ impl FileRegistry {
     }
 
     pub fn seal(&mut self, id: &FileId) -> Result<SealedFile> {
-        if let Some((mut file, offsets)) = self.files.remove(id) {
-            file.finalize()?;
-            Ok(SealedFile::new(file.path, file.record_count, offsets))
-        } else {
-            Err(SinkError::FileRegistry(format!(
-                "could not find file '{id}' in file registry (seal)"
-            )))
-        }
+        let (mut file, offsets) = self.files.remove(id).ok_or_else(|| {
+            SinkError::FileRegistry(format!(
+                "could not find active file '{id}' in file registry (seal)"
+            ))
+        })?;
+
+        file.finalize()?;
+
+        Ok(SealedFile::new(
+            file.path,
+            file.record_count,
+            file.raw_size_b,
+            file.writer.get_ref().compressed_size_b,
+            offsets,
+        ))
     }
 
     pub fn add_offset(
@@ -55,12 +62,11 @@ impl FileRegistry {
         partition: i32,
         offset: i64,
     ) -> Result<()> {
-        let (_, offsets) = self
-            .files
-            .get_mut(id)
-            .ok_or(SinkError::FileRegistry(format!(
-                "could not find file '{id}' in file registry (add_offset)"
-            )))?;
+        let (_, offsets) = self.files.get_mut(id).ok_or_else(|| {
+            SinkError::FileRegistry(format!(
+                "could not find active file '{id}' in file registry (add_offset)"
+            ))
+        })?;
 
         offsets.add(topic_name, partition, offset);
 
@@ -71,38 +77,35 @@ impl FileRegistry {
 pub struct SealedFile {
     path: PathBuf,
     record_count: usize,
+    raw_size_b: usize,
+    compressed_size_b: usize,
     offsets: SealedOffsets,
 }
 impl SealedFile {
-    pub fn new(path: PathBuf, record_count: usize, offsets: OffsetRegistry) -> Self {
+    pub fn new(
+        path: PathBuf,
+        record_count: usize,
+        raw_size_b: usize,
+        compressed_size_b: usize,
+        offsets: OffsetRegistry,
+    ) -> Self {
         SealedFile {
             path,
             record_count,
+            raw_size_b,
+            compressed_size_b,
             offsets: SealedOffsets::from(offsets),
         }
     }
 
-    pub fn into_parts(self) -> (PathBuf, usize, TopicOffsets) {
-        (self.path, self.record_count, self.offsets.into_parts())
-    }
-}
-
-/*
-Wrapper to track how many compressed bytes are written
-*/
-struct CountingWriter<W: Write> {
-    inner: W,
-    compressed_size_b: usize,
-}
-impl<W: Write> Write for CountingWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = self.inner.write(buf)?;
-        self.compressed_size_b += n;
-        Ok(n)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(self.inner.flush()?)
+    pub fn into_parts(self) -> (PathBuf, usize, usize, usize, TopicOffsets) {
+        (
+            self.path,
+            self.record_count,
+            self.raw_size_b,
+            self.compressed_size_b,
+            self.offsets.into_parts(),
+        )
     }
 }
 
@@ -154,8 +157,37 @@ impl ActiveFile {
     pub fn raw_size_b(&self) -> usize {
         self.raw_size_b
     }
+}
 
-    pub fn compressed_size_b(&self) -> usize {
-        self.writer.get_ref().compressed_size_b
+/*
+Wrapper to track how many compressed bytes are written
+*/
+struct CountingWriter<W: Write> {
+    inner: W,
+    compressed_size_b: usize,
+}
+impl<W: Write> Write for CountingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.compressed_size_b += n;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(self.inner.flush()?)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_sealed_file_into_parts() {
+        let sealed_file = SealedFile::new(PathBuf::new(), 1, 1000, 100, OffsetRegistry::new());
+        let (_, record_count, raw_size_b, compressed_size_b, _) = sealed_file.into_parts();
+        assert_eq!(record_count, 1);
+        assert_eq!(raw_size_b, 1000);
+        assert_eq!(compressed_size_b, 100);
     }
 }

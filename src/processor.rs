@@ -1,15 +1,14 @@
+use crate::{
+    BoxFuture, Result, TopicConfig, Uploader, error::SinkError, file_registry::FileRegistry,
+    json_serializer::JsonSerializer, kafka_consumer::SpecialContext,
+};
 use futures::stream::FuturesUnordered;
 use rdkafka::{Message, consumer::StreamConsumer, message::BorrowedMessage};
-
-use crate::{
-    BoxFuture, RecordDecoder, Result, TopicConfig, Uploader, error::SinkError,
-    file_registry::FileRegistry, json_serializer::JsonSerializer, kafka_consumer::SpecialContext,
-    record_router::RecordRouter,
-};
 use std::collections::HashMap;
 
 pub struct Processor<'a, U: Uploader> {
     uploader: U,
+    serializer: JsonSerializer,
     topics_config: HashMap<&'a str, &'a TopicConfig>,
     target_file_size_b: usize,
     max_concurrent_uploads: usize,
@@ -34,41 +33,37 @@ impl<'a, U: Uploader> Processor<'a, U> {
 
         Processor {
             uploader,
+            serializer: JsonSerializer::new(),
             topics_config,
             target_file_size_b,
             max_concurrent_uploads,
         }
     }
 
-    fn topic_config(&self, topic_name: &str) -> Result<(&RecordDecoder, &RecordRouter)> {
-        let config =
-            self.topics_config
-                .get(topic_name)
-                .copied()
-                .ok_or(SinkError::ConfigurationError(format!(
-                    "missing topic configuration for '{topic_name}'"
-                )))?;
-
-        Ok((&config.decoder, &config.router))
-    }
-
+    /*
+    Simple rate limiter for the number of in-flight uploads. We can limit the memory needed for these uploads.
+     */
     fn can_upload(&self, raw_size_b: usize, in_flight_uploads: usize) -> bool {
         raw_size_b >= self.target_file_size_b && in_flight_uploads < self.max_concurrent_uploads
     }
 
-    pub fn process(
+    pub fn process_record(
         &mut self,
         record: &BorrowedMessage<'_>,
         registry: &mut FileRegistry,
         upload_ftrs: &mut FuturesUnordered<BoxFuture>,
-        serializer: &mut JsonSerializer,
     ) -> Result<()> {
-        let (decoder, router) = self.topic_config(record.topic())?;
+        let topic_name = record.topic();
 
-        if let Some(bytes) = serializer.serialize(record, decoder) {
-            let file_id = router.id(record);
+        let topic_config = self.topics_config.get(topic_name).copied().ok_or_else(|| {
+            SinkError::ConfigurationError(format!("missing topic configuration for '{topic_name}'"))
+        })?;
 
-            let file = registry.get_active_file_or_create(&file_id)?;
+        let file_id = &topic_config.router.id(record);
+
+        // serializer will return None for records with no payload
+        if let Some(bytes) = self.serializer.serialize(record, &topic_config.decoder)? {
+            let file = registry.get_mut_active_file_or_create(&file_id)?;
             file.write_all(bytes)?;
             file.inc_record_count();
 
@@ -76,16 +71,16 @@ impl<'a, U: Uploader> Processor<'a, U> {
                 let sealed_file = registry.seal(&file_id)?;
                 upload_ftrs.push(self.uploader.upload(sealed_file));
             }
-
-            registry.add_offset(
-                &file_id,
-                record.topic(),
-                record.partition(),
-                record.offset(),
-            )?;
-
-            // topic ingestion budget management
         }
+
+        registry.add_offset(
+            &file_id,
+            record.topic(),
+            record.partition(),
+            record.offset(),
+        )?;
+
+        // TODO: fairness scheduler
 
         Ok(())
     }

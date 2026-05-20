@@ -3,10 +3,10 @@ pub enum RecordDecoder {
     StringDecoder,
 }
 impl RecordDecoder {
-    pub fn data_payload<'a>(&self, payload: &'a [u8]) -> &'a [u8] {
+    pub fn data_payload<'a>(&self, payload: &'a [u8]) -> Option<&'a [u8]> {
         match self {
-            RecordDecoder::JsonSchemaDecoder => &payload[5..],
-            RecordDecoder::StringDecoder => payload,
+            RecordDecoder::JsonSchemaDecoder => payload.get(5..),
+            RecordDecoder::StringDecoder => Some(payload),
         }
     }
 }

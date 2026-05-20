@@ -68,9 +68,9 @@ fn main() {
 
     let config = get_config();
 
-    let sink = Sink::new(config);
+    let sink = Sink::new(&config, mock_uploader);
 
-    match sink.start_sink(mock_uploader) {
+    match sink.run() {
         Ok(_) => info!("Tokio runtime exited"),
         Err(error) => error!("unexpected sink error: {:?}", error),
     };
