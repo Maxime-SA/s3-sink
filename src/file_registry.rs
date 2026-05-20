@@ -78,16 +78,12 @@ impl SealedFile {
         SealedFile {
             path,
             record_count,
-            offsets: SealedOffsets::new(offsets),
+            offsets: SealedOffsets::from(offsets),
         }
     }
 
-    pub fn offsets(self) -> TopicOffsets {
-        self.offsets.offsets()
-    }
-
-    pub fn into_parts(self) -> (PathBuf, TopicOffsets) {
-        (self.path, self.offsets.offsets())
+    pub fn into_parts(self) -> (PathBuf, usize, TopicOffsets) {
+        (self.path, self.record_count, self.offsets.into_parts())
     }
 }
 

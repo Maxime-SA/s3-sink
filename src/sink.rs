@@ -104,15 +104,15 @@ impl Sink {
         consumer: &StreamConsumer<SpecialContext>,
         registry: &mut OffsetRegistry,
     ) -> Result<()> {
-        let offsets = registry.offsets();
+        // let offsets = registry.offsets();
 
-        let mut topic_partition_list = TopicPartitionList::new();
+        // let mut topic_partition_list = TopicPartitionList::new();
 
-        for ((topic, partition), offsets) in offsets.iter() {
-            topic_partition_list.add
-        }
+        // for ((topic, partition), offsets) in offsets.iter() {
+        //     topic_partition_list.add
+        // }
 
-        consumer.commit(topic_partition_list, rdkafka::consumer::CommitMode::Async);
+        // consumer.commit(topic_partition_list, rdkafka::consumer::CommitMode::Async);
 
         Ok(())
     }

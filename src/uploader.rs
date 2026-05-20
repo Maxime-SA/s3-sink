@@ -60,7 +60,7 @@ impl Uploader for S3Upload {
         Box::pin(async {
             info!("uploading to s3");
 
-            let (file_to_gc, offsets_to_commit) = sealed_file.into_parts();
+            let (file_to_gc, _, offsets_to_commit) = sealed_file.into_parts();
 
             Ok(UploadResult::new(file_to_gc, offsets_to_commit))
         })
@@ -73,7 +73,7 @@ impl Uploader for MockUploader {
         Box::pin(async {
             info!("sleeping for X seconds");
 
-            let (file_to_gc, offsets_to_commit) = sealed_file.into_parts();
+            let (file_to_gc, _, offsets_to_commit) = sealed_file.into_parts();
 
             Ok(UploadResult::new(file_to_gc, offsets_to_commit))
         })
