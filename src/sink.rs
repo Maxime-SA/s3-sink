@@ -1,6 +1,6 @@
-use crate::file_registry::FileRegistry;
+use crate::files::FileRegistry;
 use crate::kafka_consumer::{SpecialContext, init_kafka_consumer};
-use crate::offset_registry::{OffsetRegistry, TopicOffsets};
+use crate::offset::OffsetRegistry;
 use crate::processor::Processor;
 use crate::uploader::Uploader;
 use crate::{BoxFuture, Result, SinkConfig, TimersConfig, UploadResult};
@@ -20,7 +20,7 @@ where
 {
     config: &'a SinkConfig, // configuration for the sink connector, how can we update this at runtime
     file_registry: FileRegistry<'a>, // file registry for active file writers
-    commit_registry: OffsetRegistry, // commit registry to track consumed and committable offsets
+    commit_registry: OffsetRegistry, // commit registry to track offsets that have been uploaded
     processor: Processor<'a, U>, // record processor
     upload_ftrs: FuturesUnordered<BoxFuture>, // pool of futures that upload files to S3
     timer_interrupts: TimerInterrupts, // timer interrupts to handle specific tasks
@@ -101,54 +101,13 @@ where
                 maybe_next_record = consumer.recv() => {
                     self.processor.process_record(&maybe_next_record?, &mut self.file_registry, &mut self.upload_ftrs)?;
                 }
-
             }
         }
     }
 
     fn commit_offsets(&mut self, consumer: &StreamConsumer<SpecialContext>) -> Result<()> {
-        let mut offsets_to_commit = TopicPartitionList::new();
-
-        let mut keys_to_remove = vec![];
-
-        let uploaded_offsets = self.commit_registry.get_mut_offsets();
-
-        for ((topic, partition), offsets) in &mut *uploaded_offsets {
-            // continue if offsets is empty
-            let Some(Reverse(first)) = offsets.peek().copied() else {
-                keys_to_remove.push((topic.clone(), *partition));
-                continue;
-            };
-
-            /*
-            Find the first contiguous offset which is not present in the offsets that we have uploaded.
-            This is the offset at which a consumer should restart on crash.
-             */
-            let mut next_expected = first;
-            while let Some(Reverse(offset)) = offsets.peek()
-                && *offset == next_expected
-            {
-                offsets.pop();
-                next_expected += 1;
-            }
-
-            offsets_to_commit.add_partition_offset(
-                topic,
-                *partition,
-                rdkafka::Offset::Offset(next_expected),
-            )?;
-
-            if offsets.is_empty() {
-                keys_to_remove.push((topic.clone(), *partition));
-            }
-        }
-
-        for key in keys_to_remove {
-            uploaded_offsets.remove(&key);
-        }
-
+        let offsets_to_commit = self.commit_registry.topic_partition_list()?;
         consumer.commit(&offsets_to_commit, rdkafka::consumer::CommitMode::Async)?;
-
         Ok(())
     }
 
@@ -158,9 +117,8 @@ where
             return Ok(());
         };
 
-        let (file_to_gc, offsets_to_commit) = upload_result.into_parts();
-
-        self.commit_registry.combine(offsets_to_commit);
+        let (file_to_gc, offsets) = upload_result.into_parts();
+        self.commit_registry.combine(offsets);
 
         fs::remove_file(file_to_gc)?;
 

@@ -1,7 +1,6 @@
+use rdkafka::error::KafkaError;
 use std::io;
 use std::result;
-
-use rdkafka::error::KafkaError;
 
 #[derive(Debug, PartialEq)]
 pub enum SinkError {

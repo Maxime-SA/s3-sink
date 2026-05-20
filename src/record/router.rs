@@ -11,7 +11,7 @@ impl fmt::Display for FileId {
 }
 
 /*
-RecordRouter sends a record to its appropriate file partition by generating its FileId.
+RecordRouter sends a record to its appropriate file partition by generating its StreamId.
 */
 pub enum RecordRouter {
     TopicVersion,
@@ -19,7 +19,7 @@ pub enum RecordRouter {
 }
 impl RecordRouter {
     /*
-    We can use a local cache as it is wasteful to generate these FileId on every record
+    Can we use a local cache as it is wasteful to generate these FileId on every record
      */
     pub fn id<M: Message>(&self, record: &M) -> FileId {
         match self {

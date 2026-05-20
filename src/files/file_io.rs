@@ -1,11 +1,8 @@
 use crate::{
     Result,
-    error::SinkError,
-    offset_registry::{OffsetRegistry, SealedOffsets, TopicOffsets},
-    record_router::FileId,
+    offset::{ConsumedOffset, OffsetEnvelope},
 };
 use std::{
-    collections::HashMap,
     fs::File,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
@@ -14,72 +11,12 @@ use std::{
 use uuid::Uuid;
 use zstd::Encoder;
 
-pub struct FileRegistry<'a> {
-    directory: &'a Path,
-    compression_level: i32,
-    files: HashMap<FileId, (ActiveFile, OffsetRegistry)>,
-}
-impl<'a> FileRegistry<'a> {
-    pub fn new(directory: &'a Path, compression_level: i32) -> Self {
-        FileRegistry {
-            directory: directory,
-            compression_level,
-            files: HashMap::new(),
-        }
-    }
-
-    pub fn get_mut_active_file_or_create(&mut self, id: &FileId) -> Result<&mut ActiveFile> {
-        if !self.files.contains_key(id) {
-            let file = ActiveFile::new(self.directory, self.compression_level)?;
-            self.files.insert(id.clone(), (file, OffsetRegistry::new()));
-        }
-
-        Ok(&mut self.files.get_mut(id).unwrap().0)
-    }
-
-    pub fn seal(&mut self, id: &FileId) -> Result<SealedFile> {
-        let (mut file, offsets) = self.files.remove(id).ok_or_else(|| {
-            SinkError::FileRegistry(format!(
-                "could not find active file '{id}' in file registry (seal)"
-            ))
-        })?;
-
-        file.finalize()?;
-
-        Ok(SealedFile::new(
-            file.path,
-            file.record_count,
-            file.raw_size_b,
-            file.writer.get_ref().compressed_size_b,
-            offsets,
-        ))
-    }
-
-    pub fn add_offset(
-        &mut self,
-        id: &FileId,
-        topic_name: &str,
-        partition: i32,
-        offset: i64,
-    ) -> Result<()> {
-        let (_, offsets) = self.files.get_mut(id).ok_or_else(|| {
-            SinkError::FileRegistry(format!(
-                "could not find active file '{id}' in file registry (add_offset)"
-            ))
-        })?;
-
-        offsets.add(topic_name, partition, offset);
-
-        Ok(())
-    }
-}
-
 pub struct SealedFile {
     path: PathBuf,
     record_count: usize,
     raw_size_b: usize,
     compressed_size_b: usize,
-    offsets: SealedOffsets,
+    offsets: OffsetEnvelope<ConsumedOffset>,
 }
 impl SealedFile {
     pub fn new(
@@ -87,24 +24,24 @@ impl SealedFile {
         record_count: usize,
         raw_size_b: usize,
         compressed_size_b: usize,
-        offsets: OffsetRegistry,
+        offsets: OffsetEnvelope<ConsumedOffset>,
     ) -> Self {
         SealedFile {
             path,
             record_count,
             raw_size_b,
             compressed_size_b,
-            offsets: SealedOffsets::from(offsets),
+            offsets: offsets,
         }
     }
 
-    pub fn into_parts(self) -> (PathBuf, usize, usize, usize, TopicOffsets) {
+    pub fn into_parts(self) -> (PathBuf, usize, usize, usize, OffsetEnvelope<ConsumedOffset>) {
         (
             self.path,
             self.record_count,
             self.raw_size_b,
             self.compressed_size_b,
-            self.offsets.into_parts(),
+            self.offsets,
         )
     }
 }
@@ -142,6 +79,16 @@ impl ActiveFile {
         self.raw_size_b += bytes.len();
         self.writer.write_all(bytes)?;
         Ok(())
+    }
+
+    pub fn into_parts(self) -> (PathBuf, usize, usize, usize, Instant) {
+        (
+            self.path,
+            self.record_count,
+            self.raw_size_b,
+            self.writer.get_ref().compressed_size_b,
+            self.created_at,
+        )
     }
 
     pub fn inc_record_count(&mut self) {
@@ -184,7 +131,7 @@ mod test {
 
     #[test]
     fn test_sealed_file_into_parts() {
-        let sealed_file = SealedFile::new(PathBuf::new(), 1, 1000, 100, OffsetRegistry::new());
+        let sealed_file = SealedFile::new(PathBuf::new(), 1, 1000, 100, OffsetEnvelope::new(None));
         let (_, record_count, raw_size_b, compressed_size_b, _) = sealed_file.into_parts();
         assert_eq!(record_count, 1);
         assert_eq!(raw_size_b, 1000);

@@ -1,5 +1,5 @@
 use crate::{
-    BoxFuture, Result, TopicConfig, Uploader, error::SinkError, file_registry::FileRegistry,
+    BoxFuture, Result, TopicConfig, Uploader, error::SinkError, files::FileRegistry,
     json_serializer::JsonSerializer, kafka_consumer::SpecialContext,
 };
 use futures::stream::FuturesUnordered;
@@ -61,7 +61,7 @@ impl<'a, U: Uploader> Processor<'a, U> {
 
         let file_id = &topic_config.router.id(record);
 
-        // serializer will return None for records with no payload
+        // serializer will return None for records with no payload and Err(...) for errors
         if let Some(bytes) = self.serializer.serialize(record, &topic_config.decoder)? {
             let file = registry.get_mut_active_file_or_create(&file_id)?;
             file.write_all(bytes)?;

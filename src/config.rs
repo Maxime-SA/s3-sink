@@ -1,6 +1,5 @@
+use crate::{RecordDecoder, RecordRouter};
 use std::path::PathBuf;
-
-use crate::{RecordDecoder, record_router::RecordRouter};
 
 pub struct TopicConfig {
     pub decoder: RecordDecoder,
@@ -35,5 +34,3 @@ pub struct SinkConfig {
     pub files: FileConfig,
     pub uploads: UploadConfig,
 }
-
-// pub struct TokioConfig {}

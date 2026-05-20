@@ -35,6 +35,7 @@ impl JsonSerializer {
         self.buf.extend_from_slice(b"{\"data\":");
         self.buf.extend_from_slice(data_payload);
 
+        // need to make sure that headers are valid JSON
         if let Some(headers) = record.headers() {
             for header in headers.iter() {
                 // delimiter
