@@ -8,6 +8,8 @@ use std::{
 use uuid::Uuid;
 use zstd::Encoder;
 
+const BUFFER_CAPACITY: usize = 1024 * 64;
+
 /*
 Todo:
 - Review unit tests
@@ -47,7 +49,7 @@ impl ActiveFile {
         let file = File::options().create(true).append(true).open(&path)?;
 
         let counting_writer = CountingWriter {
-            inner: BufWriter::new(file),
+            inner: BufWriter::with_capacity(BUFFER_CAPACITY, file),
             compressed_size_b: 0,
         };
 

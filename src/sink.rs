@@ -24,7 +24,6 @@ pub struct Sink<'a> {
     upload_ftrs: FuturesUnordered<BoxFuture>, // pool of futures that upload files to S3
     timer_interrupts: TimerInterrupts, // timer interrupts to handle specific tasks
 }
-
 impl<'a> Sink<'a> {
     pub fn new(config: &'a SinkConfig) -> Self {
         let file_registry = FileRegistry::new(
@@ -110,10 +109,11 @@ impl<'a> Sink<'a> {
         }
     }
 
-    // need to review this method, how can we track committed offsets until we have confirmation from Kafka that they have been committed
     fn process_commit_tick(&mut self, consumer: &StreamConsumer<SpecialContext>) -> Result<()> {
-        let offsets_to_commit = self.offset_registry.commit()?;
-        consumer.commit(&offsets_to_commit, rdkafka::consumer::CommitMode::Async)?;
+        let offsets_to_commit = self.offset_registry.committable_offsets()?;
+        if offsets_to_commit.count() > 0 {
+            consumer.commit(&offsets_to_commit, rdkafka::consumer::CommitMode::Async)?;
+        }
         Ok(())
     }
 
@@ -141,7 +141,11 @@ impl<'a> Sink<'a> {
         uploader: &U,
     ) -> Result<()> {
         match result {
-            UploadResult::Failure(to_upload) => self.upload_ftrs.push(uploader.upload(to_upload)),
+            UploadResult::Failure(to_upload) =>
+            // can we add backoff here or a max retry?
+            {
+                self.upload_ftrs.push(uploader.upload(to_upload))
+            }
             UploadResult::Success(file_to_gc, offsets) => {
                 self.offset_registry.add_uploaded(offsets);
                 fs::remove_file(file_to_gc)?;

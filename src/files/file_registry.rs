@@ -44,6 +44,7 @@ impl<'a> FileRegistry<'a> {
                 result.push(id.clone());
             }
         }
+
         result
     }
 

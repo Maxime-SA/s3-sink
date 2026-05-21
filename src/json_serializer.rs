@@ -16,13 +16,15 @@ Todo:
 - Review unit tests
 */
 
+const BUFFER_CAPACITY: usize = 1024 * 64;
+
 pub struct JsonSerializer {
     buf: Vec<u8>,
 }
 impl JsonSerializer {
     pub fn new() -> Self {
         JsonSerializer {
-            buf: Vec::with_capacity(65536),
+            buf: Vec::with_capacity(BUFFER_CAPACITY),
         }
     }
 
@@ -43,7 +45,7 @@ impl JsonSerializer {
                 record.topic(),
                 record.partition(),
                 record.offset(),
-                decoder.to_string()
+                decoder
             ))
         })?;
 
@@ -230,7 +232,7 @@ mod test {
             message.topic(),
             message.partition(),
             message.offset(),
-            RecordDecoder::JsonSchemaDecoder.to_string()
+            RecordDecoder::JsonSchemaDecoder
         ));
 
         assert_eq!(expected_result, actual_result);

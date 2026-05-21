@@ -3,12 +3,11 @@ use crate::envelopes::SealedOffsets;
 use crate::error::SinkError;
 use crate::record::StreamId;
 use rdkafka::TopicPartitionList;
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 
 pub type OffsetsVec = HashMap<(String, i32), Vec<i64>>;
-pub type OffsetsHeap = HashMap<(String, i32), BinaryHeap<Reverse<i64>>>;
+pub type OffsetsHeap = HashMap<(String, i32), BTreeSet<i64>>;
 
 /*
 Todo:
@@ -41,8 +40,10 @@ impl OffsetRegistry {
 
     pub fn add_uploaded(&mut self, uploaded: OffsetsVec) {
         for ((topic_name, partition), offsets) in uploaded {
-            let heap = self.uploaded.entry((topic_name, partition)).or_default();
-            offsets.iter().for_each(|&o| heap.push(Reverse(o)));
+            self.uploaded
+                .entry((topic_name, partition))
+                .or_default()
+                .extend(offsets);
         }
     }
 
@@ -65,14 +66,12 @@ impl OffsetRegistry {
             })?)
     }
 
-    pub fn commit(&mut self) -> Result<TopicPartitionList> {
+    pub fn committable_offsets(&mut self) -> Result<TopicPartitionList> {
         let mut result = TopicPartitionList::new();
-
         let mut keys_to_remove = vec![];
 
         for ((topic, partition), offsets) in &mut self.uploaded {
-            // continue if offsets is empty
-            let Some(Reverse(first)) = offsets.peek().copied() else {
+            let Some(&first) = offsets.iter().next() else {
                 keys_to_remove.push((topic.clone(), *partition));
                 continue;
             };
@@ -81,20 +80,26 @@ impl OffsetRegistry {
             Find the first contiguous offset which is not present in the offsets that we have uploaded.
             This is the offset at which a consumer should restart on crash.
              */
-            let mut next_expected = first;
-            while let Some(Reverse(offset)) = offsets.peek()
-                && *offset == next_expected
-            {
-                offsets.pop();
-                next_expected += 1;
+            let mut offset_to_commit = first;
+            for &offset in offsets.iter() {
+                if offset == offset_to_commit {
+                    offset_to_commit += 1;
+                } else {
+                    break;
+                }
             }
 
             result.add_partition_offset(
                 topic,
                 *partition,
-                rdkafka::Offset::Offset(next_expected),
+                rdkafka::Offset::Offset(offset_to_commit),
             )?;
 
+            // garbage collect any redundant offsets
+            let new = offsets.split_off(&offset_to_commit);
+            *offsets = new;
+
+            // garbage collect any redundant topic partition keys
             if offsets.is_empty() {
                 keys_to_remove.push((topic.clone(), *partition));
             }

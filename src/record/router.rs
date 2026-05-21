@@ -1,11 +1,11 @@
-use std::{borrow::Cow, fmt};
 use rdkafka::{Message, message::Headers};
+use std::{borrow::Cow, collections::HashSet, fmt, rc::Rc};
 
 /*
 Todo:
 - Review unit tests
 - Avoid StreamId allocation
-     
+
 */
 
 #[derive(Eq, Hash, PartialEq, Clone)]
@@ -14,6 +14,20 @@ impl fmt::Display for StreamId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+pub struct StreamIdV2(Rc<str>);
+pub struct RecordRouterV2 {
+    buf: String,
+    cache: HashSet<StreamIdV2>,
+}
+impl RecordRouterV2 {
+    pub fn id<M: Message>(&self, record: &M, strategy: RouterStrategy) -> StreamIdV2 {}
+}
+
+pub enum RouterStrategy {
+    TopicVersion,
+    TopicVersionStatusCode,
 }
 
 /*

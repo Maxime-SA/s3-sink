@@ -1,3 +1,5 @@
+use std::fmt::{self, write};
+
 pub enum RecordDecoder {
     JsonSchemaDecoder,
     JsonStringDecoder,
@@ -18,12 +20,13 @@ impl RecordDecoder {
     }
 }
 
-impl ToString for RecordDecoder {
-    fn to_string(&self) -> String {
-        match self {
-            RecordDecoder::JsonSchemaDecoder => String::from("JsonSchemaDecoder"),
-            RecordDecoder::JsonStringDecoder => String::from("JsonStringDecoder"),
-        }
+impl fmt::Display for RecordDecoder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let str = match self {
+            RecordDecoder::JsonSchemaDecoder => "JsonSchemaDecoder",
+            RecordDecoder::JsonStringDecoder => "JsonStringDecoder",
+        };
+        write!(f, "{}", str)
     }
 }
 
