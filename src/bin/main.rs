@@ -21,7 +21,7 @@ const LOCAL_KAFKA_CONFIG: [(&str, &str); 14] = [
 fn get_config() -> SinkConfig {
     let topic_config = TopicConfig {
         decoder: RecordDecoder::JsonSchemaDecoder,
-        router: RecordRouter::TopicVersion,
+        router: RouterStrategy::TopicVersion,
     };
 
     let kafka_config = KafkaConfig {

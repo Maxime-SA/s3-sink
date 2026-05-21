@@ -4,7 +4,7 @@ use crate::files::FileRegistry;
 use crate::json_serializer::JsonSerializer;
 use crate::kafka_consumer::{SpecialContext, init_kafka_consumer};
 use crate::offset_registry::OffsetRegistry;
-use crate::record::StreamId;
+use crate::record::{StreamId, StreamIdCache};
 use crate::uploader::Uploader;
 use crate::{BoxFuture, Result, SinkConfig, TimersConfig, TopicConfig};
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -23,6 +23,7 @@ pub struct Sink<'a> {
     offset_registry: OffsetRegistry, // commit registry to track offsets that have been uploaded
     upload_ftrs: FuturesUnordered<BoxFuture>, // pool of futures that upload files to S3
     timer_interrupts: TimerInterrupts, // timer interrupts to handle specific tasks
+    stream_id_cache: StreamIdCache,
 }
 impl<'a> Sink<'a> {
     pub fn new(config: &'a SinkConfig) -> Self {
@@ -49,6 +50,8 @@ impl<'a> Sink<'a> {
 
         let timer_interrupts = TimerInterrupts::new(&config.timers);
 
+        let stream_id_cache = StreamIdCache::new();
+
         Self {
             config,
             file_registry,
@@ -56,6 +59,7 @@ impl<'a> Sink<'a> {
             topics_config,
             upload_ftrs,
             timer_interrupts,
+            stream_id_cache,
         }
     }
 
@@ -175,7 +179,7 @@ impl<'a> Sink<'a> {
             SinkError::ConfigurationError(format!("missing topic configuration for '{topic_name}'"))
         })?;
 
-        let stream_id = &topic_config.router.id(record);
+        let stream_id = self.stream_id_cache.id(record, &topic_config.router);
 
         self.offset_registry.add_consumed(
             &stream_id,
@@ -185,10 +189,10 @@ impl<'a> Sink<'a> {
         );
 
         if let Some(bytes) = serializer.serialize(record, &topic_config.decoder)? {
-            self.file_registry.write_all(stream_id, bytes)?;
+            self.file_registry.write_all(&stream_id, bytes)?;
 
-            if self.ready_to_upload(self.file_registry.file_size(stream_id)?) {
-                self.seal_and_upload(stream_id, uploader)?;
+            if self.ready_to_upload(self.file_registry.file_size(&stream_id)?) {
+                self.seal_and_upload(&stream_id, uploader)?;
             }
         }
 

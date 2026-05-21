@@ -11,6 +11,6 @@ mod uploader;
 
 pub use config::*;
 pub use error::Result;
-pub use record::{RecordDecoder, RecordRouter};
+pub use record::{RecordDecoder, RouterStrategy};
 pub use sink::Sink;
 pub use uploader::{BoxFuture, MockUploader, S3Upload, Uploader};
