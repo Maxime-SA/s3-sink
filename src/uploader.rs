@@ -1,12 +1,10 @@
-mod mock_uploader; // temporary for testing
-pub use mock_uploader::MockUploader;
+mod mock_uploader;
+mod s3_uploader;
 
-use crate::{
-    Result,
-    files::SealedFile,
-    offset::{OffsetEnvelope, UploadedOffset},
-};
-use std::{path::PathBuf, pin::Pin};
+use crate::envelopes::{ToUpload, UploadResult};
+pub use mock_uploader::MockUploader;
+pub use s3_uploader::S3Upload;
+use std::pin::Pin;
 
 /*
 Pin:
@@ -19,25 +17,8 @@ Box:
 dyn:
 - Trait objects (i.e. type erasure).
 */
-pub type BoxFuture = Pin<Box<dyn Future<Output = Result<UploadResult>>>>;
+pub type BoxFuture = Pin<Box<dyn Future<Output = UploadResult>>>;
 
 pub trait Uploader {
-    fn upload(&self, sealed_file: SealedFile) -> BoxFuture;
-}
-
-pub struct UploadResult {
-    file_to_gc: PathBuf,
-    offsets: OffsetEnvelope<UploadedOffset>,
-}
-impl UploadResult {
-    pub fn new(file_to_gc: PathBuf, offsets: OffsetEnvelope<UploadedOffset>) -> Self {
-        UploadResult {
-            file_to_gc,
-            offsets: offsets,
-        }
-    }
-
-    pub fn into_parts(self) -> (PathBuf, OffsetEnvelope<UploadedOffset>) {
-        (self.file_to_gc, self.offsets)
-    }
+    fn upload(&self, to_upload: ToUpload) -> BoxFuture;
 }

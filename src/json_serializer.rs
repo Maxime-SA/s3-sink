@@ -2,6 +2,20 @@ use rdkafka::{Message, message::Headers};
 
 use crate::{RecordDecoder, Result, error::SinkError};
 
+/*
+Assumptions:
+- JsonSchemaDecoder is valid Json Schema.
+- JsonStringDecoder is valid Json string with characters escaped.
+- Headers that contain problematic characters will be silently dropped.
+
+Thoughts:
+- These are not validated, if they are not respected, data will be corrupted.
+- Not the most robust SerDe but for our use case, I think the tradeoffs are worth it.
+
+Todo:
+- Review unit tests
+*/
+
 pub struct JsonSerializer {
     buf: Vec<u8>,
 }
@@ -24,35 +38,46 @@ impl JsonSerializer {
         self.buf.clear();
 
         let data_payload = decoder.data_payload(raw_payload).ok_or_else(|| {
-            SinkError::DecoderError(format!(
-                "could not decode record '{}', partition '{}', offset '{}'",
+            SinkError::SerializationError(format!(
+                "could not decode record '{}', partition '{}', offset '{}' with {}",
                 record.topic(),
                 record.partition(),
-                record.offset()
+                record.offset(),
+                decoder.to_string()
             ))
         })?;
 
         self.buf.extend_from_slice(b"{\"data\":");
         self.buf.extend_from_slice(data_payload);
 
-        // need to make sure that headers are valid JSON
         if let Some(headers) = record.headers() {
             for header in headers.iter() {
-                // delimiter
-                self.buf.push(b',');
-                // write key name
-                self.buf.extend_from_slice(b"\"x-");
-                self.buf.extend_from_slice(header.key.as_bytes());
-                self.buf.extend_from_slice(b"\":\"");
-                // write value
-                self.buf.extend_from_slice(header.value.unwrap_or(b""));
-                self.buf.push(b'"');
+                let key_bytes = header.key.as_bytes();
+
+                if let Some(header_value) = header.value
+                    && Self::is_valid_json(header_value)
+                    && Self::is_valid_json(key_bytes)
+                {
+                    // delimiter
+                    self.buf.push(b',');
+                    // write key name
+                    self.buf.extend_from_slice(b"\"x-");
+                    self.buf.extend_from_slice(key_bytes);
+                    self.buf.extend_from_slice(b"\":\"");
+                    // write value
+                    self.buf.extend_from_slice(header_value);
+                    self.buf.push(b'"');
+                }
             }
         }
 
         self.buf.extend_from_slice(b"}\n");
 
         Ok(Some(&self.buf))
+    }
+
+    fn is_valid_json(bytes: &[u8]) -> bool {
+        !bytes.iter().any(|&b| b == b'"' || b == b'\\' || b < 0x20)
     }
 }
 
@@ -131,7 +156,7 @@ mod test {
 
         let actual_result = String::from_utf8(
             serializer
-                .serialize(&message, &RecordDecoder::StringDecoder)
+                .serialize(&message, &RecordDecoder::JsonStringDecoder)
                 .unwrap()
                 .unwrap()
                 .to_vec(),
@@ -156,7 +181,7 @@ mod test {
 
         let actual_result = String::from_utf8(
             serializer
-                .serialize(&message, &RecordDecoder::StringDecoder)
+                .serialize(&message, &RecordDecoder::JsonStringDecoder)
                 .unwrap()
                 .unwrap()
                 .to_vec(),
@@ -176,7 +201,7 @@ mod test {
         let message = make_message(None, Some(headers));
 
         let actual_result = serializer
-            .serialize(&message, &RecordDecoder::StringDecoder)
+            .serialize(&message, &RecordDecoder::JsonStringDecoder)
             .unwrap();
 
         let expected_result = None;
@@ -190,7 +215,7 @@ mod test {
 
         // payload without magic bytes
         let mut payload = vec![];
-        payload.extend_from_slice(b"\"t\"");
+        payload.extend_from_slice(b"{\"data\": 4}");
 
         let headers = make_headers(None);
         let message = make_message(Some(payload.to_vec()), Some(headers));
@@ -200,11 +225,12 @@ mod test {
             .err()
             .unwrap();
 
-        let expected_result = SinkError::DecoderError(format!(
-            "could not decode record '{}', partition '{}', offset '{}'",
+        let expected_result = SinkError::SerializationError(format!(
+            "could not decode record '{}', partition '{}', offset '{}' with {}",
             message.topic(),
             message.partition(),
             message.offset(),
+            RecordDecoder::JsonSchemaDecoder.to_string()
         ));
 
         assert_eq!(expected_result, actual_result);

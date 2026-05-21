@@ -1,4 +1,5 @@
-use super::{BoxFuture, SealedFile, UploadResult, Uploader};
+use super::{BoxFuture, UploadResult, Uploader};
+use crate::envelopes::ToUpload;
 use tracing::info;
 
 pub struct S3Upload {
@@ -11,14 +12,17 @@ impl S3Upload {
 }
 
 impl Uploader for S3Upload {
-    fn upload(&self, sealed_file: SealedFile) -> BoxFuture {
+    fn upload(&self, sealed_upload: ToUpload) -> BoxFuture {
         Box::pin(async {
             info!("uploading to s3");
 
-            let (file_to_gc, record_count, raw_size_b, compressed_size_b, offsets_to_commit) =
-                sealed_file.into_parts();
+            let (file, sealed_offsets) = sealed_upload.into_parts();
 
-            Ok(UploadResult::new(file_to_gc, offsets_to_commit.into()))
+            let (path, raw_size_b, compressed_size_b, created_at) = file.into_parts();
+
+            let offsets = sealed_offsets.into_parts();
+
+            UploadResult::success(path, offsets)
         })
     }
 }

@@ -1,27 +1,30 @@
 use std::{borrow::Cow, fmt};
-
 use rdkafka::{Message, message::Headers};
 
+/*
+Todo:
+- Review unit tests
+- Avoid StreamId allocation
+     
+*/
+
 #[derive(Eq, Hash, PartialEq, Clone)]
-pub struct FileId(pub String);
-impl fmt::Display for FileId {
+pub struct StreamId(pub String);
+impl fmt::Display for StreamId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
 /*
-RecordRouter sends a record to its appropriate file partition by generating its StreamId.
+RecordRouter sends a record to its appropriate stream by generating its StreamId.
 */
 pub enum RecordRouter {
     TopicVersion,
     TopicVersionStatusCode,
 }
 impl RecordRouter {
-    /*
-    Can we use a local cache as it is wasteful to generate these FileId on every record
-     */
-    pub fn id<M: Message>(&self, record: &M) -> FileId {
+    pub fn id<M: Message>(&self, record: &M) -> StreamId {
         match self {
             Self::TopicVersion => Self::group_by_topic_version(record),
             Self::TopicVersionStatusCode => Self::group_by_topic_version_status_code(record),
@@ -44,16 +47,16 @@ impl RecordRouter {
             .unwrap_or_else(|| Cow::Owned(format!("unknown_{key}")))
     }
 
-    fn group_by_topic_version<M: Message>(record: &M) -> FileId {
+    fn group_by_topic_version<M: Message>(record: &M) -> StreamId {
         let schema_name = Self::get_header(record, "schema_name");
         let schema_version = Self::get_header(record, "schema_version");
-        FileId(format!("{schema_name}.{schema_version}"))
+        StreamId(format!("{schema_name}.{schema_version}"))
     }
 
-    fn group_by_topic_version_status_code<M: Message>(record: &M) -> FileId {
+    fn group_by_topic_version_status_code<M: Message>(record: &M) -> StreamId {
         let schema_name = Self::get_header(record, "schema_name");
         let schema_version = Self::get_header(record, "schema_version");
         let status_code = Self::get_header(record, "status_code");
-        FileId(format!("{schema_name}.{schema_version}.{status_code}"))
+        StreamId(format!("{schema_name}.{schema_version}.{status_code}"))
     }
 }

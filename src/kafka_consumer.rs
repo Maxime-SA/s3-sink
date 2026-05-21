@@ -6,15 +6,18 @@ use rdkafka::{
 };
 use tracing::info;
 
-pub struct SpecialContext;
-impl ClientContext for SpecialContext {}
-impl ConsumerContext for SpecialContext {
-    /*
-    We need to figure out what to do with partitions that will be revoked.
+/*
+Todo:
+- Review unit tests
+- Figure out what to do with partitions that will be revoked.
     - Do we need to flush and upload?
     - Simply discard work done so far and commit offsets?
     - ...
-     */
+*/
+
+pub struct SpecialContext;
+impl ClientContext for SpecialContext {}
+impl ConsumerContext for SpecialContext {
     fn pre_rebalance(
         &self,
         base_consumer: &rdkafka::consumer::BaseConsumer<Self>,

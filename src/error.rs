@@ -2,15 +2,17 @@ use rdkafka::error::KafkaError;
 use std::io;
 use std::result;
 
+use crate::envelopes::ToUpload;
+
 #[derive(Debug, PartialEq)]
 pub enum SinkError {
     KafkaError(String),
     IOError(String),
-    S3Error(String),
     ConfigurationError(String),
-    FileRegistry(String),
-    DecoderError(String),
-    CatchAll(String),
+    FileRegistryError(String),
+    OffsetRegistryError(String),
+    SerializationError(String),
+    UploadError(ToUpload),
 }
 
 impl From<KafkaError> for SinkError {

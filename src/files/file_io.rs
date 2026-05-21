@@ -1,7 +1,4 @@
-use crate::{
-    Result,
-    offset::{ConsumedOffset, OffsetEnvelope},
-};
+use crate::Result;
 use std::{
     fs::File,
     io::{BufWriter, Write},
@@ -11,38 +8,28 @@ use std::{
 use uuid::Uuid;
 use zstd::Encoder;
 
-pub struct SealedFile {
-    path: PathBuf,
-    record_count: usize,
-    raw_size_b: usize,
+/*
+Todo:
+- Review unit tests
+*/
+
+/*
+Wrapper to track how many compressed bytes are written
+*/
+struct CountingWriter<W: Write> {
+    inner: W,
     compressed_size_b: usize,
-    offsets: OffsetEnvelope<ConsumedOffset>,
 }
-impl SealedFile {
-    pub fn new(
-        path: PathBuf,
-        record_count: usize,
-        raw_size_b: usize,
-        compressed_size_b: usize,
-        offsets: OffsetEnvelope<ConsumedOffset>,
-    ) -> Self {
-        SealedFile {
-            path,
-            record_count,
-            raw_size_b,
-            compressed_size_b,
-            offsets: offsets,
-        }
+
+impl<W: Write> Write for CountingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.compressed_size_b += n;
+        Ok(n)
     }
 
-    pub fn into_parts(self) -> (PathBuf, usize, usize, usize, OffsetEnvelope<ConsumedOffset>) {
-        (
-            self.path,
-            self.record_count,
-            self.raw_size_b,
-            self.compressed_size_b,
-            self.offsets,
-        )
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(self.inner.flush()?)
     }
 }
 
@@ -50,9 +37,9 @@ pub struct ActiveFile {
     path: PathBuf,
     writer: Encoder<'static, CountingWriter<BufWriter<File>>>,
     raw_size_b: usize,
-    record_count: usize,
     created_at: Instant,
 }
+
 impl ActiveFile {
     pub fn new(directory: &Path, compression_level: i32) -> Result<Self> {
         let path = directory.join(Uuid::new_v4().to_string());
@@ -70,7 +57,6 @@ impl ActiveFile {
             path,
             writer,
             raw_size_b: 0,
-            record_count: 0,
             created_at: Instant::now(),
         })
     }
@@ -81,60 +67,30 @@ impl ActiveFile {
         Ok(())
     }
 
-    pub fn into_parts(self) -> (PathBuf, usize, usize, usize, Instant) {
-        (
-            self.path,
-            self.record_count,
-            self.raw_size_b,
-            self.writer.get_ref().compressed_size_b,
-            self.created_at,
-        )
-    }
-
-    pub fn inc_record_count(&mut self) {
-        self.record_count += 1;
-    }
-
     pub fn finalize(&mut self) -> Result<()> {
         self.writer.flush()?;
         self.writer.do_finish()?;
         Ok(())
     }
 
+    pub fn compressed_size_b(&self) -> usize {
+        self.writer.get_ref().compressed_size_b
+    }
+
     pub fn raw_size_b(&self) -> usize {
         self.raw_size_b
     }
-}
 
-/*
-Wrapper to track how many compressed bytes are written
-*/
-struct CountingWriter<W: Write> {
-    inner: W,
-    compressed_size_b: usize,
-}
-impl<W: Write> Write for CountingWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = self.inner.write(buf)?;
-        self.compressed_size_b += n;
-        Ok(n)
+    pub fn created_at(&self) -> Instant {
+        self.created_at
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(self.inner.flush()?)
+    pub fn path(self) -> PathBuf {
+        self.path
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-
-    #[test]
-    fn test_sealed_file_into_parts() {
-        let sealed_file = SealedFile::new(PathBuf::new(), 1, 1000, 100, OffsetEnvelope::new(None));
-        let (_, record_count, raw_size_b, compressed_size_b, _) = sealed_file.into_parts();
-        assert_eq!(record_count, 1);
-        assert_eq!(raw_size_b, 1000);
-        assert_eq!(compressed_size_b, 100);
-    }
 }

@@ -2,8 +2,8 @@ use crate::{RecordDecoder, RecordRouter};
 use std::path::PathBuf;
 
 pub struct TopicConfig {
-    pub decoder: RecordDecoder,
-    pub router: RecordRouter,
+    pub decoder: RecordDecoder, // decoder knows how to extract Kafka value payload
+    pub router: RecordRouter,   // router knows which stream to forward a record to
 }
 
 pub struct KafkaConfig {
@@ -25,6 +25,7 @@ pub struct TimersConfig {
 
 pub struct UploadConfig {
     pub max_concurrent_uploads: usize, // maximum number of concurrent uploads at any given point
+    pub max_active_file_timeout_m: u64, // maximum amount of time (minutes) that an active file can remain open
 }
 
 pub struct SinkConfig {

@@ -1,83 +1,79 @@
 use crate::{
-    Result,
-    error::SinkError,
-    files::{SealedFile, file_io::ActiveFile},
-    offset::{ConsumedOffset, OffsetEnvelope},
-    record::FileId,
+    Result, envelopes::SealedFile, error::SinkError, files::file_io::ActiveFile, record::StreamId,
 };
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path, time::Instant};
 
 /*
-- Backpressure:
-    - Sum bytes in active files
-    - Active files count
-- 
+Todo:
+- Review unit tests
+- Avoid StreamId allocation on:
+    - files
+    - older_than
+*/
+
+/*
+Manage all active files.
 */
 pub struct FileRegistry<'a> {
     directory: &'a Path,
     compression_level: i32,
-    files: HashMap<FileId, (ActiveFile, OffsetEnvelope<ConsumedOffset>)>,
+    files: HashMap<StreamId, ActiveFile>,
 }
 impl<'a> FileRegistry<'a> {
     pub fn new(directory: &'a Path, compression_level: i32) -> Self {
         FileRegistry {
-            directory: directory,
+            directory,
             compression_level,
             files: HashMap::new(),
         }
     }
 
-    pub fn get_mut_active_file_or_create(&mut self, id: &FileId) -> Result<&mut ActiveFile> {
+    pub fn seal(&mut self, id: &StreamId) -> Result<SealedFile> {
+        let mut file = self
+            .files
+            .remove(id)
+            .ok_or_else(|| self.file_not_found("seal", id))?;
+        file.finalize()?;
+        Ok(SealedFile::new(file))
+    }
+
+    pub fn files_older_than(&mut self, cut_off: Instant) -> Vec<StreamId> {
+        let mut result = vec![];
+        for (id, file) in &self.files {
+            if file.created_at() < cut_off {
+                result.push(id.clone());
+            }
+        }
+        result
+    }
+
+    pub fn write_all(&mut self, id: &StreamId, bytes: &[u8]) -> Result<()> {
+        Ok(self.get_mut_active_file_or_create(id)?.write_all(bytes)?)
+    }
+
+    pub fn file_size(&self, id: &StreamId) -> Result<usize> {
+        Ok(self
+            .files
+            .get(id)
+            .ok_or_else(|| self.file_not_found("file_size", id))?
+            .raw_size_b())
+    }
+
+    fn get_mut_active_file_or_create(&mut self, id: &StreamId) -> Result<&mut ActiveFile> {
         if !self.files.contains_key(id) {
             let file = ActiveFile::new(self.directory, self.compression_level)?;
-            self.files
-                .insert(id.clone(), (file, OffsetEnvelope::new(None)));
+            self.files.insert(id.clone(), file);
         }
 
-        Ok(&mut self.files.get_mut(id).unwrap().0)
+        Ok(self.files.get_mut(id).unwrap())
     }
 
-    pub fn seal(&mut self, id: &FileId) -> Result<SealedFile> {
-        let (mut file, offsets) = self.files.remove(id).ok_or_else(|| {
-            SinkError::FileRegistry(format!(
-                "could not find active file '{id}' in file registry (seal)"
-            ))
-        })?;
-
-        // review this, finalize()? could return everything I need instead of then calling into_parts
-
-        file.finalize()?;
-
-        let (path, record_count, raw_size_b, compressed_size_b, _) = file.into_parts();
-
-        Ok(SealedFile::new(
-            path,
-            record_count,
-            raw_size_b,
-            compressed_size_b,
-            offsets,
-        ))
+    fn file_not_found(&self, method: &str, id: &StreamId) -> SinkError {
+        SinkError::FileRegistryError(format!("{method}: active file '{id}' not found"))
     }
+}
 
-    pub fn add_offset(
-        &mut self,
-        id: &FileId,
-        topic_name: &str,
-        partition: i32,
-        offset: i64,
-    ) -> Result<()> {
-        let (_, offsets) = self.files.get_mut(id).ok_or_else(|| {
-            SinkError::FileRegistry(format!(
-                "could not find active file '{id}' in file registry (add_offset)"
-            ))
-        })?;
-
-        offsets
-            .get_mut_offsets()
-            .entry((topic_name.into(), partition))
-            .or_default()
-            .push(offset);
-
-        Ok(())
-    }
+#[cfg(test)]
+mod test {
+    use super::*;
 }

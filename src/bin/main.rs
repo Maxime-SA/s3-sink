@@ -46,6 +46,7 @@ fn get_config() -> SinkConfig {
 
     let upload_config = UploadConfig {
         max_concurrent_uploads: 50,
+        max_active_file_timeout_m: 15,
     };
 
     SinkConfig {
@@ -68,9 +69,9 @@ fn main() {
 
     let config = get_config();
 
-    let sink = Sink::new(&config, mock_uploader);
+    let sink = Sink::new(&config);
 
-    match sink.run() {
+    match sink.run(mock_uploader) {
         Ok(_) => info!("Tokio runtime exited"),
         Err(error) => error!("unexpected sink error: {:?}", error),
     };
