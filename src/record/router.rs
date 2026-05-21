@@ -41,7 +41,7 @@ impl StreamIdCache {
         }
     }
 
-    pub fn id<M: Message>(&mut self, record: &M, strategy: &RouterStrategy) -> StreamId {
+    pub fn get<M: Message>(&mut self, record: &M, strategy: &RouterStrategy) -> StreamId {
         strategy.write_id(record, &mut self.buf);
 
         if let Some(cached) = self.cache.get(self.buf.as_str()) {
@@ -57,6 +57,7 @@ impl StreamIdCache {
 /*
 RouterStrategy defines a mapping between a record and its StreamId.
 */
+#[derive(Clone, Copy)]
 pub enum RouterStrategy {
     TopicVersion,
     TopicVersionStatusCode,

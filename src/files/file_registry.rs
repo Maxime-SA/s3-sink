@@ -1,7 +1,11 @@
 use crate::{
     Result, envelopes::SealedFile, error::SinkError, files::file_io::ActiveFile, record::StreamId,
 };
-use std::{collections::HashMap, path::Path, time::Instant};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 /*
 Todo:
@@ -14,15 +18,15 @@ Todo:
 /*
 Manage all active files.
 */
-pub struct FileRegistry<'a> {
-    directory: &'a Path,
+pub struct FileRegistry {
+    directory: PathBuf,
     compression_level: i32,
     files: HashMap<StreamId, ActiveFile>,
 }
-impl<'a> FileRegistry<'a> {
-    pub fn new(directory: &'a Path, compression_level: i32) -> Self {
+impl FileRegistry {
+    pub fn new(directory: &Path, compression_level: i32) -> Self {
         FileRegistry {
-            directory,
+            directory: directory.to_path_buf(),
             compression_level,
             files: HashMap::new(),
         }
@@ -62,7 +66,7 @@ impl<'a> FileRegistry<'a> {
 
     fn get_mut_active_file_or_create(&mut self, id: &StreamId) -> Result<&mut ActiveFile> {
         if !self.files.contains_key(id) {
-            let file = ActiveFile::new(self.directory, self.compression_level)?;
+            let file = ActiveFile::new(self.directory.as_path(), self.compression_level)?;
             self.files.insert(id.clone(), file);
         }
 

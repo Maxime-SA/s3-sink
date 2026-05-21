@@ -12,45 +12,74 @@ use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::{BorrowedMessage, Message};
 use std::collections::HashMap;
 use std::fs;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tokio::select;
 use tokio::time::{Interval, interval};
+use tracing::info;
+
+struct Metrics {
+    records_processed: u64,
+    bytes_written: u64,
+    uploads_completed: u64,
+    started_at: Instant,
+}
+impl Metrics {
+    fn new() -> Self {
+        Self {
+            records_processed: 0,
+            bytes_written: 0,
+            uploads_completed: 0,
+            started_at: Instant::now(),
+        }
+    }
+
+    fn log_if_needed(&self) {
+        if self.records_processed % 10_000 == 0 && self.records_processed > 0 {
+            let elapsed = self.started_at.elapsed().as_secs_f64();
+            info!(
+                "records={} bytes={:.1}MB rate={:.0}rec/s {:.1}MB/s uploads={}",
+                self.records_processed,
+                self.bytes_written as f64 / 1_048_576.0,
+                self.records_processed as f64 / elapsed,
+                self.bytes_written as f64 / 1_048_576.0 / elapsed,
+                self.uploads_completed,
+            );
+        }
+    }
+}
 
 pub struct Sink<'a> {
     config: &'a SinkConfig, // configuration for the sink connector, how can we update this at runtime
-    topics_config: HashMap<&'a str, &'a TopicConfig>,
-    file_registry: FileRegistry<'a>, // file registry for active file writers
+    file_registry: FileRegistry, // file registry for active file writers
     offset_registry: OffsetRegistry, // commit registry to track offsets that have been uploaded
     upload_ftrs: FuturesUnordered<BoxFuture>, // pool of futures that upload files to S3
     timer_interrupts: TimerInterrupts, // timer interrupts to handle specific tasks
-    stream_id_cache: StreamIdCache,
+    stream_ids: StreamIdCache, // StreamIds cache
+    topics_config: HashMap<Rc<str>, TopicConfig>, // topic name and config cache
+    metrics: Metrics,
 }
 impl<'a> Sink<'a> {
     pub fn new(config: &'a SinkConfig) -> Self {
+        info!("initializing FileRegistry");
         let file_registry = FileRegistry::new(
-            config.files.scratch_directory.as_path(),
+            &config.files.scratch_directory,
             config.files.compression_level,
         );
 
+        info!("initializing OffsetRegistry");
         let offset_registry = OffsetRegistry::new();
 
-        let topics_config =
-            config
-                .kafka
-                .input_topics
-                .iter()
-                .fold(HashMap::new(), |mut acc, (configs, topics)| {
-                    topics.iter().for_each(|topic| {
-                        acc.insert(topic.as_str(), configs);
-                    });
-                    acc
-                });
-
+        info!("setting-up queue to upload files");
         let upload_ftrs = FuturesUnordered::new();
 
+        info!("initializing TimerInterrupts");
         let timer_interrupts = TimerInterrupts::new(&config.timers);
 
-        let stream_id_cache = StreamIdCache::new();
+        info!("initializing StreamIdCache");
+        let stream_ids = StreamIdCache::new();
+
+        let topics_config = Self::build_topics_config(&config);
 
         Self {
             config,
@@ -59,8 +88,19 @@ impl<'a> Sink<'a> {
             topics_config,
             upload_ftrs,
             timer_interrupts,
-            stream_id_cache,
+            stream_ids,
+            metrics: Metrics::new(),
         }
+    }
+
+    fn build_topics_config(config: &SinkConfig) -> HashMap<Rc<str>, TopicConfig> {
+        let mut map = HashMap::new();
+        for (topic_config, topics) in &config.kafka.input_topics {
+            for topic in topics {
+                map.insert(Rc::from(topic.as_str()), *topic_config);
+            }
+        }
+        map
     }
 
     pub fn run<U: Uploader>(self, uploader: U) -> Result<()> {
@@ -68,6 +108,10 @@ impl<'a> Sink<'a> {
             .enable_all()
             .build()?;
         Ok(runtime.block_on(self.event_loop(uploader))?)
+    }
+
+    pub async fn run_async<U: Uploader>(self, uploader: U) -> Result<()> {
+        self.event_loop(uploader).await
     }
 
     async fn event_loop<U: Uploader>(mut self, uploader: U) -> Result<()> {
@@ -152,7 +196,8 @@ impl<'a> Sink<'a> {
             }
             UploadResult::Success(file_to_gc, offsets) => {
                 self.offset_registry.add_uploaded(offsets);
-                fs::remove_file(file_to_gc)?;
+                self.metrics.uploads_completed += 1;
+                // fs::remove_file(file_to_gc)?;
             }
         }
         Ok(())
@@ -175,11 +220,11 @@ impl<'a> Sink<'a> {
     ) -> Result<()> {
         let topic_name = record.topic();
 
-        let topic_config = self.topics_config.get(topic_name).copied().ok_or_else(|| {
+        let topic_config = self.topics_config.get(topic_name).ok_or_else(|| {
             SinkError::ConfigurationError(format!("missing topic configuration for '{topic_name}'"))
         })?;
 
-        let stream_id = self.stream_id_cache.id(record, &topic_config.router);
+        let stream_id = self.stream_ids.get(record, &topic_config.router);
 
         self.offset_registry.add_consumed(
             &stream_id,
@@ -190,13 +235,15 @@ impl<'a> Sink<'a> {
 
         if let Some(bytes) = serializer.serialize(record, &topic_config.decoder)? {
             self.file_registry.write_all(&stream_id, bytes)?;
+            self.metrics.bytes_written += bytes.len() as u64;
 
             if self.ready_to_upload(self.file_registry.file_size(&stream_id)?) {
                 self.seal_and_upload(&stream_id, uploader)?;
             }
         }
 
-        // Topic fairness scheduler ...
+        self.metrics.records_processed += 1;
+        self.metrics.log_if_needed();
 
         Ok(())
     }

@@ -44,7 +44,8 @@ pub struct ActiveFile {
 
 impl ActiveFile {
     pub fn new(directory: &Path, compression_level: i32) -> Result<Self> {
-        let path = directory.join(Uuid::new_v4().to_string());
+        let mut path = directory.join(Uuid::new_v4().to_string());
+        path.set_extension(".json.zst");
 
         let file = File::options().create(true).append(true).open(&path)?;
 
