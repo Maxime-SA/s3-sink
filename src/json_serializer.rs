@@ -16,15 +16,15 @@ Todo:
 - Review unit tests
 */
 
-const BUFFER_CAPACITY: usize = 1024 * 64;
-
 pub struct JsonSerializer {
     buf: Vec<u8>,
 }
 impl JsonSerializer {
+    const BUFFER_CAPACITY: usize = 1024 * 512;
+
     pub fn new() -> Self {
         JsonSerializer {
-            buf: Vec::with_capacity(BUFFER_CAPACITY),
+            buf: Vec::with_capacity(Self::BUFFER_CAPACITY),
         }
     }
 
@@ -40,7 +40,7 @@ impl JsonSerializer {
         self.buf.clear();
 
         let data_payload = decoder.data_payload(raw_payload).ok_or_else(|| {
-            SinkError::SerializationError(format!(
+            SinkError::Serialization(format!(
                 "could not decode record '{}', partition '{}', offset '{}' with {}",
                 record.topic(),
                 record.partition(),
@@ -227,7 +227,7 @@ mod test {
             .err()
             .unwrap();
 
-        let expected_result = SinkError::SerializationError(format!(
+        let expected_result = SinkError::Serialization(format!(
             "could not decode record '{}', partition '{}', offset '{}' with {}",
             message.topic(),
             message.partition(),

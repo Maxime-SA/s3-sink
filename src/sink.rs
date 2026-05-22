@@ -2,7 +2,7 @@ use crate::envelopes::{ToUpload, UploadResult};
 use crate::error::SinkError;
 use crate::files::FileRegistry;
 use crate::json_serializer::JsonSerializer;
-use crate::kafka_consumer::{SpecialContext, init_kafka_consumer};
+use crate::kafka_consumer::{CustomContext, init_kafka_consumer};
 use crate::offset_registry::OffsetRegistry;
 use crate::record::{StreamId, StreamIdCache};
 use crate::uploader::Uploader;
@@ -18,46 +18,16 @@ use tokio::select;
 use tokio::time::{Interval, interval};
 use tracing::info;
 
-struct Metrics {
-    records_processed: u64,
-    bytes_written: u64,
-    uploads_completed: u64,
-    started_at: Instant,
-}
-impl Metrics {
-    fn new() -> Self {
-        Self {
-            records_processed: 0,
-            bytes_written: 0,
-            uploads_completed: 0,
-            started_at: Instant::now(),
-        }
-    }
-
-    fn log_if_needed(&self) {
-        if self.records_processed % 10_000 == 0 && self.records_processed > 0 {
-            let elapsed = self.started_at.elapsed().as_secs_f64();
-            info!(
-                "records={} bytes={:.1}MB rate={:.0}rec/s {:.1}MB/s uploads={}",
-                self.records_processed,
-                self.bytes_written as f64 / 1_048_576.0,
-                self.records_processed as f64 / elapsed,
-                self.bytes_written as f64 / 1_048_576.0 / elapsed,
-                self.uploads_completed,
-            );
-        }
-    }
-}
+type S3UploadPool = FuturesUnordered<BoxFuture>;
 
 pub struct Sink<'a> {
     config: &'a SinkConfig, // configuration for the sink connector, how can we update this at runtime
     file_registry: FileRegistry, // file registry for active file writers
     offset_registry: OffsetRegistry, // commit registry to track offsets that have been uploaded
-    upload_ftrs: FuturesUnordered<BoxFuture>, // pool of futures that upload files to S3
+    upload_pool: S3UploadPool, // pool of futures that upload files to S3
     timer_interrupts: TimerInterrupts, // timer interrupts to handle specific tasks
     stream_ids: StreamIdCache, // StreamIds cache
-    topics_config: HashMap<Rc<str>, TopicConfig>, // topic name and config cache
-    metrics: Metrics,
+    topics_config: TopicConfigCache, // topic name and config cache
 }
 impl<'a> Sink<'a> {
     pub fn new(config: &'a SinkConfig) -> Self {
@@ -70,8 +40,8 @@ impl<'a> Sink<'a> {
         info!("initializing OffsetRegistry");
         let offset_registry = OffsetRegistry::new();
 
-        info!("setting-up queue to upload files");
-        let upload_ftrs = FuturesUnordered::new();
+        info!("initializing S3UploadPool");
+        let upload_pool = FuturesUnordered::new();
 
         info!("initializing TimerInterrupts");
         let timer_interrupts = TimerInterrupts::new(&config.timers);
@@ -79,35 +49,26 @@ impl<'a> Sink<'a> {
         info!("initializing StreamIdCache");
         let stream_ids = StreamIdCache::new();
 
-        let topics_config = Self::build_topics_config(&config);
+        info!("initializing TopicConfigCache");
+        let topics_config = TopicConfigCache::new(config);
 
         Self {
             config,
             file_registry,
             offset_registry,
             topics_config,
-            upload_ftrs,
+            upload_pool,
             timer_interrupts,
             stream_ids,
-            metrics: Metrics::new(),
         }
-    }
-
-    fn build_topics_config(config: &SinkConfig) -> HashMap<Rc<str>, TopicConfig> {
-        let mut map = HashMap::new();
-        for (topic_config, topics) in &config.kafka.input_topics {
-            for topic in topics {
-                map.insert(Rc::from(topic.as_str()), *topic_config);
-            }
-        }
-        map
     }
 
     pub fn run<U: Uploader>(self, uploader: U) -> Result<()> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        Ok(runtime.block_on(self.event_loop(uploader))?)
+
+        runtime.block_on(self.event_loop(uploader))
     }
 
     pub async fn run_async<U: Uploader>(self, uploader: U) -> Result<()> {
@@ -130,7 +91,7 @@ impl<'a> Sink<'a> {
                 biased;
 
                 // 1. an upload to S3 has completed
-                Some(result) = self.upload_ftrs.next() => {
+                Some(result) = self.upload_pool.next() => {
                     self.process_upload_result(result, &uploader)?;
                 }
 
@@ -157,7 +118,7 @@ impl<'a> Sink<'a> {
         }
     }
 
-    fn process_commit_tick(&mut self, consumer: &StreamConsumer<SpecialContext>) -> Result<()> {
+    fn process_commit_tick(&mut self, consumer: &StreamConsumer<CustomContext>) -> Result<()> {
         let offsets_to_commit = self.offset_registry.committable_offsets()?;
         if offsets_to_commit.count() > 0 {
             consumer.commit(&offsets_to_commit, rdkafka::consumer::CommitMode::Async)?;
@@ -178,7 +139,7 @@ impl<'a> Sink<'a> {
 
     fn process_fairness_scheduler_tick(
         &mut self,
-        consumer: &StreamConsumer<SpecialContext>,
+        consumer: &StreamConsumer<CustomContext>,
     ) -> Result<()> {
         todo!()
     }
@@ -189,15 +150,11 @@ impl<'a> Sink<'a> {
         uploader: &U,
     ) -> Result<()> {
         match result {
-            UploadResult::Failure(to_upload) =>
             // can we add backoff here or a max retry?
-            {
-                self.upload_ftrs.push(uploader.upload(to_upload))
-            }
+            UploadResult::Failure(to_upload) => self.upload_pool.push(uploader.upload(to_upload)),
             UploadResult::Success(file_to_gc, offsets) => {
                 self.offset_registry.add_uploaded(offsets);
-                self.metrics.uploads_completed += 1;
-                // fs::remove_file(file_to_gc)?;
+                let _ = fs::remove_file(file_to_gc); // ignore deletion failure, but we should report metric
             }
         }
         Ok(())
@@ -209,7 +166,7 @@ impl<'a> Sink<'a> {
      */
     fn ready_to_upload(&self, raw_size_b: usize) -> bool {
         raw_size_b >= self.config.files.target_file_size_b
-            && self.upload_ftrs.len() < self.config.uploads.max_concurrent_uploads
+            && self.upload_pool.len() < self.config.uploads.max_concurrent_uploads
     }
 
     fn process_record<U: Uploader>(
@@ -220,39 +177,37 @@ impl<'a> Sink<'a> {
     ) -> Result<()> {
         let topic_name = record.topic();
 
-        let topic_config = self.topics_config.get(topic_name).ok_or_else(|| {
-            SinkError::ConfigurationError(format!("missing topic configuration for '{topic_name}'"))
+        let (topic_ref, topic_config) = self.topics_config.get(topic_name).ok_or_else(|| {
+            SinkError::Configuration(format!("missing topic configuration for '{topic_name}'"))
         })?;
 
         let stream_id = self.stream_ids.get(record, &topic_config.router);
 
         self.offset_registry.add_consumed(
             &stream_id,
-            record.topic(),
+            topic_ref,
             record.partition(),
             record.offset(),
         );
 
         if let Some(bytes) = serializer.serialize(record, &topic_config.decoder)? {
             self.file_registry.write_all(&stream_id, bytes)?;
-            self.metrics.bytes_written += bytes.len() as u64;
 
             if self.ready_to_upload(self.file_registry.file_size(&stream_id)?) {
                 self.seal_and_upload(&stream_id, uploader)?;
             }
         }
 
-        self.metrics.records_processed += 1;
-        self.metrics.log_if_needed();
+        // todo: fairness scheduler
 
         Ok(())
     }
 
     fn seal_and_upload<U: Uploader>(&mut self, id: &StreamId, uploader: &U) -> Result<()> {
-        let sealed_file = self.file_registry.seal(&id)?;
-        let sealed_offsets = self.offset_registry.seal(&id)?;
+        let sealed_file = self.file_registry.seal(id)?;
+        let sealed_offsets = self.offset_registry.seal(id)?;
 
-        self.upload_ftrs
+        self.upload_pool
             .push(uploader.upload(ToUpload::new(sealed_file, sealed_offsets)));
 
         Ok(())
@@ -281,6 +236,27 @@ impl TimerInterrupts {
             commit_tick,
             upload_tick,
         }
+    }
+}
+
+struct TopicConfigCache {
+    cache: HashMap<Rc<str>, TopicConfig>, // map of topic_name -> topic_config
+}
+impl TopicConfigCache {
+    fn new(config: &SinkConfig) -> Self {
+        let mut cache = HashMap::new();
+
+        for (topic_config, topics) in &config.kafka.input_topics {
+            for topic in topics {
+                cache.insert(topic.clone(), *topic_config);
+            }
+        }
+
+        Self { cache }
+    }
+
+    fn get(&self, topic_name: &str) -> Option<(&Rc<str>, &TopicConfig)> {
+        self.cache.get_key_value(topic_name)
     }
 }
 

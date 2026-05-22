@@ -8,8 +8,6 @@ use std::{
 use uuid::Uuid;
 use zstd::Encoder;
 
-const BUFFER_CAPACITY: usize = 1024 * 64;
-
 /*
 Todo:
 - Review unit tests
@@ -31,7 +29,7 @@ impl<W: Write> Write for CountingWriter<W> {
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        Ok(self.inner.flush()?)
+        self.inner.flush()
     }
 }
 
@@ -43,14 +41,16 @@ pub struct ActiveFile {
 }
 
 impl ActiveFile {
+    const BUFFER_CAPACITY: usize = 1024 * 64;
+
     pub fn new(directory: &Path, compression_level: i32) -> Result<Self> {
         let mut path = directory.join(Uuid::new_v4().to_string());
-        path.set_extension(".json.zst");
+        path.set_extension("json.zst");
 
         let file = File::options().create(true).append(true).open(&path)?;
 
         let counting_writer = CountingWriter {
-            inner: BufWriter::with_capacity(BUFFER_CAPACITY, file),
+            inner: BufWriter::with_capacity(Self::BUFFER_CAPACITY, file),
             compressed_size_b: 0,
         };
 
@@ -73,6 +73,7 @@ impl ActiveFile {
     pub fn finalize(&mut self) -> Result<()> {
         self.writer.flush()?;
         self.writer.do_finish()?;
+        self.writer.get_mut().flush()?;
         Ok(())
     }
 

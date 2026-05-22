@@ -1,5 +1,7 @@
+use aws_config::Region;
+
 use crate::{RecordDecoder, RouterStrategy};
-use std::path::PathBuf;
+use std::{path::PathBuf, rc::Rc};
 
 #[derive(Clone, Copy)]
 pub struct TopicConfig {
@@ -8,8 +10,11 @@ pub struct TopicConfig {
 }
 
 pub struct KafkaConfig {
-    pub input_topics: Vec<(TopicConfig, Vec<String>)>, // input topics to consume
+    pub input_topics: Vec<(TopicConfig, Vec<Rc<str>>)>, // input topics to consume
     pub consumer_properties: Vec<(String, String)>, // consumer client properties (i.e. (key, value))
+    pub region: Region,
+    pub token_lifetime_ms: i64,
+    pub principal_name: String,
 }
 
 pub struct FileConfig {

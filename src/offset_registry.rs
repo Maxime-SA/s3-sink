@@ -5,9 +5,11 @@ use crate::record::StreamId;
 use rdkafka::TopicPartitionList;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::rc::Rc;
 
-pub type OffsetsVec = HashMap<(String, i32), Vec<i64>>;
-pub type OffsetsHeap = HashMap<(String, i32), BTreeSet<i64>>;
+pub type OffsetsVec = HashMap<(Rc<str>, i32), Vec<i64>>;
+pub type OffsetsHeap = HashMap<(Rc<str>, i32), BTreeSet<i64>>;
 
 /*
 Todo:
@@ -18,6 +20,7 @@ Todo:
 */
 
 pub struct OffsetRegistry {
+    gc_buf: Vec<(Rc<str>, i32)>,
     consumed: HashMap<StreamId, OffsetsVec>,
     uploaded: OffsetsHeap,
 }
@@ -25,15 +28,22 @@ pub struct OffsetRegistry {
 impl OffsetRegistry {
     pub fn new() -> Self {
         OffsetRegistry {
+            gc_buf: Vec::new(),
             consumed: HashMap::new(),
             uploaded: OffsetsHeap::new(),
         }
     }
 
-    pub fn add_consumed(&mut self, id: &StreamId, topic_name: &str, partition: i32, offset: i64) {
+    pub fn add_consumed(
+        &mut self,
+        id: &StreamId,
+        topic_name: &Rc<str>,
+        partition: i32,
+        offset: i64,
+    ) {
         let consumed_offsets = self.get_mut_stream_offsets_or_create(id);
         consumed_offsets
-            .entry((topic_name.into(), partition))
+            .entry((topic_name.clone(), partition))
             .or_default()
             .push(offset);
     }
@@ -48,31 +58,31 @@ impl OffsetRegistry {
     }
 
     fn get_mut_stream_offsets_or_create(&mut self, id: &StreamId) -> &mut OffsetsVec {
-        if !self.consumed.contains_key(id) {
-            self.consumed.insert(id.clone(), OffsetsVec::new());
+        match self.consumed.entry(id.clone()) {
+            Entry::Occupied(occupied) => occupied.into_mut(),
+            Entry::Vacant(vacant) => vacant.insert(OffsetsVec::new()),
         }
-        self.consumed.get_mut(id).unwrap()
     }
 
     pub fn seal(&mut self, id: &StreamId) -> Result<SealedOffsets> {
-        Ok(self
-            .consumed
+        self.consumed
             .remove(id)
             .map(SealedOffsets::new)
             .ok_or_else(|| {
-                SinkError::OffsetRegistryError(format!(
+                SinkError::OffsetRegistry(format!(
                     "could not seal consumed offsets for '{id}', stream not found"
                 ))
-            })?)
+            })
     }
 
     pub fn committable_offsets(&mut self) -> Result<TopicPartitionList> {
+        self.gc_buf.clear();
+
         let mut result = TopicPartitionList::new();
-        let mut keys_to_remove = vec![];
 
         for ((topic, partition), offsets) in &mut self.uploaded {
             let Some(&first) = offsets.iter().next() else {
-                keys_to_remove.push((topic.clone(), *partition));
+                self.gc_buf.push((topic.clone(), *partition));
                 continue;
             };
 
@@ -101,12 +111,12 @@ impl OffsetRegistry {
 
             // garbage collect any redundant topic partition keys
             if offsets.is_empty() {
-                keys_to_remove.push((topic.clone(), *partition));
+                self.gc_buf.push((topic.clone(), *partition));
             }
         }
 
-        for key in keys_to_remove {
-            self.uploaded.remove(&key);
+        for key in &self.gc_buf {
+            self.uploaded.remove(key);
         }
 
         Ok(result)

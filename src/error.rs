@@ -4,23 +4,23 @@ use std::result;
 
 #[derive(Debug, PartialEq)]
 pub enum SinkError {
-    KafkaError(String),
-    IOError(String),
-    ConfigurationError(String),
-    FileRegistryError(String),
-    OffsetRegistryError(String),
-    SerializationError(String),
+    Kafka(String),
+    IO(String),
+    Configuration(String),
+    FileRegistry(String),
+    OffsetRegistry(String),
+    Serialization(String),
 }
 
 impl From<KafkaError> for SinkError {
     fn from(value: KafkaError) -> Self {
-        SinkError::KafkaError(value.to_string())
+        SinkError::Kafka(value.to_string())
     }
 }
 
 impl From<std::io::Error> for SinkError {
     fn from(value: io::Error) -> Self {
-        SinkError::IOError(value.to_string())
+        SinkError::IO(value.to_string())
     }
 }
 

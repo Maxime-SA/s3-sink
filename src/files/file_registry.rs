@@ -2,7 +2,7 @@ use crate::{
     Result, envelopes::SealedFile, error::SinkError, files::file_io::ActiveFile, record::StreamId,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -42,18 +42,17 @@ impl FileRegistry {
     }
 
     pub fn files_older_than(&mut self, cut_off: Instant) -> Vec<StreamId> {
-        let mut result = vec![];
+        let mut result = Vec::new();
         for (id, file) in &self.files {
             if file.created_at() < cut_off {
                 result.push(id.clone());
             }
         }
-
         result
     }
 
     pub fn write_all(&mut self, id: &StreamId, bytes: &[u8]) -> Result<()> {
-        Ok(self.get_mut_active_file_or_create(id)?.write_all(bytes)?)
+        self.get_mut_active_file_or_create(id)?.write_all(bytes)
     }
 
     pub fn file_size(&self, id: &StreamId) -> Result<usize> {
@@ -65,16 +64,17 @@ impl FileRegistry {
     }
 
     fn get_mut_active_file_or_create(&mut self, id: &StreamId) -> Result<&mut ActiveFile> {
-        if !self.files.contains_key(id) {
-            let file = ActiveFile::new(self.directory.as_path(), self.compression_level)?;
-            self.files.insert(id.clone(), file);
-        }
-
-        Ok(self.files.get_mut(id).unwrap())
+        Ok(match self.files.entry(id.clone()) {
+            Entry::Occupied(occupied) => occupied.into_mut(),
+            Entry::Vacant(vacant) => {
+                let file = ActiveFile::new(self.directory.as_path(), self.compression_level)?;
+                vacant.insert(file)
+            }
+        })
     }
 
     fn file_not_found(&self, method: &str, id: &StreamId) -> SinkError {
-        SinkError::FileRegistryError(format!("{method}: active file '{id}' not found"))
+        SinkError::FileRegistry(format!("{method}: active file '{id}' not found"))
     }
 }
 

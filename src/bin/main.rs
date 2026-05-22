@@ -1,10 +1,15 @@
+use std::rc::Rc;
+
 use s3_sink::*;
 use tracing::{error, info};
 
-const LOCAL_KAFKA_CONFIG: [(&str, &str); 14] = [
-    ("bootstrap.servers", ""),
-    ("group.id", "kafka-s3-sink-rust"),
-    ("client.id", "kafka-s3-sink-rust"),
+const LOCAL_KAFKA_CONFIG: [(&str, &str); 15] = [
+    (
+        "bootstrap.servers",
+        "b-1.dpkafkadev.ams1av.c6.kafka.eu-west-1.amazonaws.com:9098,b-2.dpkafkadev.ams1av.c6.kafka.eu-west-1.amazonaws.com:9098,b-3.dpkafkadev.ams1av.c6.kafka.eu-west-1.amazonaws.com:9098",
+    ),
+    ("group.id", "s3-sink-rust"),
+    ("client.id", "s3-sink-rust"),
     ("auto.offset.reset", "earliest"),
     ("enable.auto.offset.store", "false"),
     ("enable.auto.commit", "false"),
@@ -15,7 +20,8 @@ const LOCAL_KAFKA_CONFIG: [(&str, &str); 14] = [
     ("partition.assignment.strategy", "cooperative-sticky"),
     ("statistics.interval.ms", "30000"), // need to register a callback on rd_kafka_conf_set_stats_cb(),
     ("socket.keepalive.enable", "true"),
-    ("security.protocol", "plaintext"), // will need to make this work with MSK
+    ("security.protocol", "SASL_SSL"),
+    ("sasl.mechanism", "OAUTHBEARER"),
 ];
 
 fn get_config() -> SinkConfig {
@@ -25,11 +31,14 @@ fn get_config() -> SinkConfig {
     };
 
     let kafka_config = KafkaConfig {
-        input_topics: vec![(topic_config, vec![String::from("topic-1")])],
+        input_topics: vec![(topic_config, vec![Rc::from(String::from("topic-1"))])],
         consumer_properties: LOCAL_KAFKA_CONFIG
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
+        principal_name: "rust-s3-sink".into(),
+        region: aws_config::Region::from_static("eu-west-1"),
+        token_lifetime_ms: 1000 * 60 * 15,
     };
 
     let timers_config = TimersConfig {

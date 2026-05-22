@@ -6,6 +6,8 @@ description = "A single-threaded asynchronous Rust-based Kafka S3 Sink"
 edition = "2024"
 
 [dependencies]
+aws-config = "1.8.17"
+aws-msk-iam-sasl-signer = "1.0.1"
 aws-sdk-s3 = "1.132.0"
 chrono = "0.4.44"
 futures = "0.3.32"
