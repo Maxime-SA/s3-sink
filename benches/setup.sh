@@ -16,13 +16,19 @@ for i in $(seq 1 10); do
   echo "  created topic-${i}"
 done
 
-echo "=== Installing MinIO client ==="
-if ! command -v mc &> /dev/null; then
-  echo "  mc not found, please install: pacman -S minio-client"
-  echo "  or: curl -O https://dl.min.io/client/mc/release/linux-amd64/mc && chmod +x mc"
+echo "=== Creating MinIO bucket ==="
+MC_CMD=""
+if command -v mcli &> /dev/null; then
+  MC_CMD="mcli"
+elif command -v mc &> /dev/null; then
+  MC_CMD="mc"
+fi
+
+if [ -z "$MC_CMD" ]; then
+  echo "  mc/mcli not found, please install: pacman -S minio-client"
 else
-  mc alias set local http://localhost:9000 minioadmin minioadmin
-  mc mb local/sink-output --ignore-existing
+  $MC_CMD alias set local http://localhost:9000 minioadmin minioadmin
+  $MC_CMD mb local/sink-output --ignore-existing
   echo "  created bucket: sink-output"
 fi
 
