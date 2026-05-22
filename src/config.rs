@@ -31,7 +31,7 @@ pub struct TimersConfig {
 
 pub struct UploadConfig {
     pub max_concurrent_uploads: u64, // maximum number of concurrent uploads at any given point
-    pub max_active_file_timeout_m: u64, // maximum amount of time (minutes) that an active file can remain open
+    pub max_active_file_timeout_ms: u64, // maximum amount of time (milliseconds) that an active file can remain open
 }
 
 pub struct SinkConfig {

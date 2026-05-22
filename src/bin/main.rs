@@ -55,7 +55,7 @@ fn get_config() -> SinkConfig {
 
     let upload_config = UploadConfig {
         max_concurrent_uploads: 50,
-        max_active_file_timeout_m: 15,
+        max_active_file_timeout_ms: 1000 * 60 * 15,
     };
 
     SinkConfig {

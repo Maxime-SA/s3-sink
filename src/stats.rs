@@ -1,4 +1,5 @@
 use std::time::Instant;
+use tracing::info;
 
 pub struct Stats {
     pub records: u64,
@@ -24,20 +25,30 @@ impl Stats {
         }
     }
 
-    pub fn elapsed_since_last_report(&self) -> f64 {
-        self.last_report.elapsed().as_secs_f64()
-    }
-
-    pub fn total_elapsed_s(&self) -> u64 {
-        self.started_at.elapsed().as_secs()
-    }
-
-    pub fn reset(&mut self) {
+    fn reset(&mut self) {
         self.records = 0;
         self.bytes = 0;
         self.seals = 0;
         self.uploads_ok = 0;
         self.uploads_failed = 0;
         self.last_report = Instant::now();
+    }
+
+    pub fn print_report(&mut self, active_file_count: u64, upload_pool_size: u64) {
+        let elapsed = self.last_report.elapsed().as_secs_f64();
+
+        info!(
+            records_per_sec = (self.records as f64 / elapsed) as u64,
+            mb_per_sec = format_args!("{:.1}", self.bytes as f64 / elapsed / 1_048_576.0),
+            seals = self.seals,
+            uploads_ok = self.uploads_ok,
+            uploads_failed = self.uploads_failed,
+            active_files = active_file_count,
+            upload_pool_size = upload_pool_size,
+            elapsed_s = self.started_at.elapsed().as_secs(),
+            "stats"
+        );
+
+        self.reset();
     }
 }

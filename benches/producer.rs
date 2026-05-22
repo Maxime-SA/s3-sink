@@ -4,8 +4,10 @@ use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use std::time::Duration;
 
 const BOOTSTRAP_SERVERS: &str = "localhost:9092";
-const NUM_TOPICS: usize = 10;
-const TARGET_BYTES_PER_TOPIC: u64 = 1 * 1024 * 1024; // 50GB
+const NUM_TOPICS: usize = 20;
+const ONE_KB: u64 = 1024;
+const ONE_MB: u64 = ONE_KB * ONE_KB;
+const TARGET_BYTES_PER_TOPIC: u64 = ONE_MB;
 
 struct TopicProfile {
     topic: String,
@@ -18,10 +20,11 @@ fn build_profiles() -> Vec<TopicProfile> {
     (1..=NUM_TOPICS)
         .map(|i| {
             let avg_size = match i {
-                1..=3 => 1_024,   // 1KB - small payloads
-                4..=6 => 60_000,  // 60KB - average payloads
-                7..=9 => 500_000, // 500KB - large payloads
-                _ => 2_000_000,   // 2MB - extra large
+                1..=5 => 4_096,       // 4KB - small payloads
+                5..=10 => 60_000,     // 60KB - average payloads
+                11..=15 => 500_000,   // 500KB - large payloads
+                15..=17 => 2_000_000, // 2MB - xlarge payloads
+                _ => 10_000_000,      // 2MB - xxlarge payloads
             };
             TopicProfile {
                 topic: format!("topic-{i}"),
@@ -55,7 +58,7 @@ fn generate_payload(size: usize) -> Vec<u8> {
     payload
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() {
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", BOOTSTRAP_SERVERS)
@@ -70,10 +73,7 @@ async fn main() {
     let profiles = build_profiles();
 
     println!("=== Producing data to {} topics ===", NUM_TOPICS);
-    println!(
-        "Target: {} GB per topic",
-        TARGET_BYTES_PER_TOPIC / (1024 * 1024 * 1024)
-    );
+    println!("Target: {} MB per topic", TARGET_BYTES_PER_TOPIC / ONE_MB);
 
     for profile in &profiles {
         let mut bytes_produced: u64 = 0;
@@ -81,10 +81,10 @@ async fn main() {
         let payload = generate_payload(profile.avg_payload_size);
 
         println!(
-            "Filling {} (payload={}KB, target={}GB)...",
+            "Filling {} (payload={}KB, target={}MB)...",
             profile.topic,
-            profile.avg_payload_size / 1024,
-            TARGET_BYTES_PER_TOPIC / (1024 * 1024 * 1024)
+            profile.avg_payload_size / (ONE_KB as usize),
+            TARGET_BYTES_PER_TOPIC / ONE_MB
         );
 
         while bytes_produced < TARGET_BYTES_PER_TOPIC {
@@ -112,18 +112,18 @@ async fn main() {
             records_produced += 1;
 
             if records_produced % 10_000 == 0 {
-                let gb = bytes_produced as f64 / (1024.0 * 1024.0 * 1024.0);
+                let mb = bytes_produced as f64 / ONE_MB as f64;
                 println!(
-                    "  {} - {:.2} GB ({} records)",
-                    profile.topic, gb, records_produced
+                    "  {} - {:.2} MB ({} records)",
+                    profile.topic, mb, records_produced
                 );
             }
         }
 
         println!(
-            "  {} done: {:.2} GB, {} records",
+            "  {} done: {:.2} MB, {} records",
             profile.topic,
-            bytes_produced as f64 / (1024.0 * 1024.0 * 1024.0),
+            bytes_produced as f64 / ONE_MB as f64,
             records_produced
         );
     }

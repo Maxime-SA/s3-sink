@@ -51,7 +51,7 @@ fn get_bench_config() -> SinkConfig {
 
     let upload_config = UploadConfig {
         max_concurrent_uploads: 50,
-        max_active_file_timeout_m: 15,
+        max_active_file_timeout_ms: 1000 * 60 * 5,
     };
 
     SinkConfig {
@@ -78,7 +78,9 @@ fn main() {
     std::fs::create_dir_all("/tmp/s3-sink-scratch").expect("failed to create scratch directory");
 
     let config = get_bench_config();
+
     let uploader = MockUploader;
+
     let sink = Sink::new(&config);
 
     info!("starting benchmark sink");
