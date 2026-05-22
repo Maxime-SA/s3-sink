@@ -1,0 +1,93 @@
+# Compose file format version (v3 services syntax, used by `docker compose`)
+services:
+
+  kafka:
+    # The container image to pull from Docker Hub
+    # cp-kafka = Confluent Platform's Kafka distribution
+    # 7.7.0 = specific version (pinned for reproducibility)
+    image: confluentinc/cp-kafka:7.7.0
+
+    environment:
+      # --- KRaft mode (no Zookeeper) ---
+
+      # Unique ID for this broker node in the cluster
+      KAFKA_NODE_ID: 1
+
+      # This node acts as BOTH a broker (serves data) and controller (manages metadata)
+      # In production you'd separate these roles across machines
+      KAFKA_PROCESS_ROLES: broker,controller
+
+      # Which nodes vote in controller elections
+      # Format: node_id@host:port
+      # Single node = it always elects itself
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+
+      # Sockets Kafka binds to INSIDE the container
+      # PLAINTEXT://0.0.0.0:9092 = broker traffic on all interfaces, port 9092
+      # CONTROLLER://0.0.0.0:9093 = internal controller traffic, port 9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+
+      # What Kafka tells CLIENTS to connect to
+      # Clients outside the container resolve "localhost:9092" (via port mapping below)
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+
+      # Which listener name is used for controller-to-controller communication
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      # Maps listener names to security protocols
+      # Both use PLAINTEXT (no TLS, no auth) — fine for local benchmarking
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+
+      # Where Kafka stores partition data on disk (inside the container)
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+
+      # Default partitions when creating a topic without specifying
+      KAFKA_NUM_PARTITIONS: 6
+
+      # Keep data for 7 days before deletion (168 hours)
+      # For your benchmark: data stays until you explicitly delete it
+      KAFKA_LOG_RETENTION_HOURS: 168
+
+      # Required for KRaft mode — pre-generated cluster UUID
+      # All brokers in a cluster must share the same ID
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+
+    ports:
+      # host_port:container_port
+      # Your sink connects to localhost:9092, Docker forwards to container's 9092
+      - "9092:9092"
+
+    volumes:
+      # Named volume — persists Kafka data across container restarts
+      # Without this, restarting the container loses all messages
+      - kafka-data:/var/lib/kafka/data
+
+  minio:
+    # MinIO = S3-compatible object storage you can run locally
+    image: minio/minio
+
+    # Command to run inside the container
+    # "server /data" = serve objects from /data directory
+    # "--console-address :9001" = web UI on port 9001
+    command: server /data --console-address ":9001"
+
+    environment:
+      # Root credentials (like AWS access key / secret key)
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+
+    ports:
+      # 9000 = S3 API endpoint (your sink uploads here)
+      # 9001 = Web console (browser UI to inspect buckets)
+      - "9000:9000"
+      - "9001:9001"
+
+    volumes:
+      # Persist uploaded objects across restarts
+      - minio-data:/data
+
+# Declare named volumes — Docker manages the actual storage location
+# Usually at /var/lib/docker/volumes/<name>/_data
+volumes:
+  kafka-data:
+  minio-data:

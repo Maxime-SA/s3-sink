@@ -45,25 +45,28 @@ impl SealedOffsets {
 #[derive(Debug, PartialEq)]
 pub struct SealedFile {
     path: PathBuf,
-    raw_size_b: usize,
-    compressed_size_b: usize,
+    raw_size_b: u64,
+    compressed_size_b: u64,
+    record_count: u64,
     created_at: Instant,
 }
 impl SealedFile {
-    pub fn new(file: ActiveFile) -> Self {
+    pub fn new(file: ActiveFile, record_count: u64) -> Self {
         SealedFile {
             raw_size_b: file.raw_size_b(),
             compressed_size_b: file.compressed_size_b(),
             created_at: file.created_at(),
             path: file.path(),
+            record_count,
         }
     }
 
-    pub fn into_parts(self) -> (PathBuf, usize, usize, Instant) {
+    pub fn into_parts(self) -> (PathBuf, u64, u64, u64, Instant) {
         (
             self.path,
             self.raw_size_b,
             self.compressed_size_b,
+            self.record_count,
             self.created_at,
         )
     }

@@ -19,7 +19,7 @@ pub struct KafkaConfig {
 
 pub struct FileConfig {
     pub scratch_directory: PathBuf, // directory for writing files before uploading
-    pub target_file_size_b: usize,  // uncompressed target file size in bytes
+    pub target_file_size_b: u64,    // uncompressed target file size in bytes
     pub compression_level: i32,     // compression level used by zstd
 }
 
@@ -30,7 +30,7 @@ pub struct TimersConfig {
 }
 
 pub struct UploadConfig {
-    pub max_concurrent_uploads: usize, // maximum number of concurrent uploads at any given point
+    pub max_concurrent_uploads: u64, // maximum number of concurrent uploads at any given point
     pub max_active_file_timeout_m: u64, // maximum amount of time (minutes) that an active file can remain open
 }
 

@@ -18,13 +18,13 @@ Wrapper to track how many compressed bytes are written
 */
 struct CountingWriter<W: Write> {
     inner: W,
-    compressed_size_b: usize,
+    compressed_size_b: u64,
 }
 
 impl<W: Write> Write for CountingWriter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let n = self.inner.write(buf)?;
-        self.compressed_size_b += n;
+        self.compressed_size_b += n as u64;
         Ok(n)
     }
 
@@ -36,7 +36,7 @@ impl<W: Write> Write for CountingWriter<W> {
 pub struct ActiveFile {
     path: PathBuf,
     writer: Encoder<'static, CountingWriter<BufWriter<File>>>,
-    raw_size_b: usize,
+    raw_size_b: u64,
     created_at: Instant,
 }
 
@@ -65,7 +65,7 @@ impl ActiveFile {
     }
 
     pub fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
-        self.raw_size_b += bytes.len();
+        self.raw_size_b += bytes.len() as u64;
         self.writer.write_all(bytes)?;
         Ok(())
     }
@@ -77,11 +77,11 @@ impl ActiveFile {
         Ok(())
     }
 
-    pub fn compressed_size_b(&self) -> usize {
+    pub fn compressed_size_b(&self) -> u64 {
         self.writer.get_ref().compressed_size_b
     }
 
-    pub fn raw_size_b(&self) -> usize {
+    pub fn raw_size_b(&self) -> u64 {
         self.raw_size_b
     }
 

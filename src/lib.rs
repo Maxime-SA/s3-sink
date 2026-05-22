@@ -7,6 +7,7 @@ mod kafka_consumer;
 mod offset_registry;
 mod record;
 mod sink;
+mod stats;
 mod uploader;
 
 pub use config::*;
