@@ -9,7 +9,7 @@ const BOOTSTRAP_SERVERS: &str = "localhost:9092";
 const NUM_TOPICS: usize = 10;
 const ONE_KB: u64 = 1024;
 const ONE_MB: u64 = ONE_KB * ONE_KB;
-const TARGET_BYTES_PER_TOPIC: u64 = ONE_MB;
+const TARGET_BYTES_PER_TOPIC: u64 = ONE_MB * 100;
 const NUM_PARTITIONS: i32 = 6;
 
 struct TopicProfile {
@@ -91,7 +91,7 @@ async fn create_topics(profiles: &[TopicProfile]) {
     }
 }
 
-#[tokio::main(flavor = "multi_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 async fn main() {
     let profiles = build_profiles();
 
@@ -111,57 +111,17 @@ async fn main() {
     println!("=== Producing data to {} topics ===", NUM_TOPICS);
     println!("Target: {} MB per topic", TARGET_BYTES_PER_TOPIC / ONE_MB);
 
-    for profile in &profiles {
-        let mut bytes_produced: u64 = 0;
-        let mut records_produced: u64 = 0;
-        let payload = generate_payload(profile.avg_payload_size);
+    let mut handles = Vec::with_capacity(profiles.len());
 
-        println!(
-            "Filling {} (payload={}KB, target={}MB)...",
-            profile.topic,
-            profile.avg_payload_size / (ONE_KB as usize),
-            TARGET_BYTES_PER_TOPIC / ONE_MB
-        );
+    for profile in profiles {
+        let producer = producer.clone();
+        handles.push(tokio::spawn(async move {
+            produce_topic(&producer, &profile).await;
+        }));
+    }
 
-        while bytes_produced < TARGET_BYTES_PER_TOPIC {
-            let headers = OwnedHeaders::new()
-                .insert(rdkafka::message::Header {
-                    key: "schema_name",
-                    value: Some(profile.schema_name.as_bytes()),
-                })
-                .insert(rdkafka::message::Header {
-                    key: "schema_version",
-                    value: Some(profile.schema_version.as_bytes()),
-                });
-
-            let record: FutureRecord<'_, str, Vec<u8>> = FutureRecord::to(&profile.topic)
-                .payload(&payload)
-                .headers(headers);
-
-            // Fire and forget with bounded queue — will block if queue is full
-            if let Err((err, _)) = producer.send(record, Duration::from_secs(30)).await {
-                eprintln!("produce error: {err}");
-                continue;
-            }
-
-            bytes_produced += payload.len() as u64;
-            records_produced += 1;
-
-            if records_produced % 10_000 == 0 {
-                let mb = bytes_produced as f64 / ONE_MB as f64;
-                println!(
-                    "  {} - {:.2} MB ({} records)",
-                    profile.topic, mb, records_produced
-                );
-            }
-        }
-
-        println!(
-            "  {} done: {:.2} MB, {} records",
-            profile.topic,
-            bytes_produced as f64 / ONE_MB as f64,
-            records_produced
-        );
+    for handle in handles {
+        handle.await.expect("task panicked");
     }
 
     // Flush remaining messages
@@ -170,4 +130,56 @@ async fn main() {
         .flush(Duration::from_secs(60))
         .expect("flush failed");
     println!("=== Done ===");
+}
+
+async fn produce_topic(producer: &FutureProducer, profile: &TopicProfile) {
+    let mut bytes_produced: u64 = 0;
+    let mut records_produced: u64 = 0;
+    let payload = generate_payload(profile.avg_payload_size);
+
+    println!(
+        "Filling {} (payload={}KB, target={}MB)...",
+        profile.topic,
+        profile.avg_payload_size / (ONE_KB as usize),
+        TARGET_BYTES_PER_TOPIC / ONE_MB
+    );
+
+    while bytes_produced < TARGET_BYTES_PER_TOPIC {
+        let headers = OwnedHeaders::new()
+            .insert(rdkafka::message::Header {
+                key: "schema_name",
+                value: Some(profile.schema_name.as_bytes()),
+            })
+            .insert(rdkafka::message::Header {
+                key: "schema_version",
+                value: Some(profile.schema_version.as_bytes()),
+            });
+
+        let record: FutureRecord<'_, str, Vec<u8>> = FutureRecord::to(&profile.topic)
+            .payload(&payload)
+            .headers(headers);
+
+        if let Err((err, _)) = producer.send(record, Duration::from_secs(30)).await {
+            eprintln!("produce error on {}: {err}", profile.topic);
+            continue;
+        }
+
+        bytes_produced += payload.len() as u64;
+        records_produced += 1;
+
+        if records_produced % 10_000 == 0 {
+            let mb = bytes_produced as f64 / ONE_MB as f64;
+            println!(
+                "  {} - {:.2} MB ({} records)",
+                profile.topic, mb, records_produced
+            );
+        }
+    }
+
+    println!(
+        "  {} done: {:.2} MB, {} records",
+        profile.topic,
+        bytes_produced as f64 / ONE_MB as f64,
+        records_produced
+    );
 }
