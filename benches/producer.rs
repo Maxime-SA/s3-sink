@@ -139,13 +139,20 @@ async fn produce_topic(producer: &FutureProducer, profile: &TopicProfile) {
     let mut records_produced: u64 = 0;
     let payload = generate_payload(profile.avg_payload_size);
     let mut in_flight = FuturesUnordered::new();
-    const MAX_IN_FLIGHT: usize = 1_000;
+
+    // Scale concurrency down for large payloads to avoid QueueFull
+    let max_in_flight = match profile.avg_payload_size {
+        0..=65_536 => 1_000,
+        65_537..=1_000_000 => 200,
+        _ => 20,
+    };
 
     println!(
-        "Filling {} (payload={}KB, target={}MB)...",
+        "Filling {} (payload={}KB, target={}MB, concurrency={})...",
         profile.topic,
         profile.avg_payload_size / (ONE_KB as usize),
-        TARGET_BYTES_PER_TOPIC / ONE_MB
+        TARGET_BYTES_PER_TOPIC / ONE_MB,
+        max_in_flight
     );
 
     while bytes_produced < TARGET_BYTES_PER_TOPIC {
@@ -168,7 +175,7 @@ async fn produce_topic(producer: &FutureProducer, profile: &TopicProfile) {
         records_produced += 1;
 
         // Drain completed futures to bound memory
-        while in_flight.len() >= MAX_IN_FLIGHT {
+        while in_flight.len() >= max_in_flight {
             if let Some(Err((err, _))) = in_flight.next().await {
                 eprintln!("produce error on {}: {err}", profile.topic);
             }
