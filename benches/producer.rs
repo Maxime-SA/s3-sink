@@ -1,3 +1,5 @@
+use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
+use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
 use rdkafka::message::OwnedHeaders;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
@@ -8,6 +10,7 @@ const NUM_TOPICS: usize = 10;
 const ONE_KB: u64 = 1024;
 const ONE_MB: u64 = ONE_KB * ONE_KB;
 const TARGET_BYTES_PER_TOPIC: u64 = ONE_MB;
+const NUM_PARTITIONS: i32 = 6;
 
 struct TopicProfile {
     topic: String,
@@ -58,8 +61,43 @@ fn generate_payload(size: usize) -> Vec<u8> {
     payload
 }
 
+async fn create_topics(profiles: &[TopicProfile]) {
+    let admin: AdminClient<DefaultClientContext> = ClientConfig::new()
+        .set("bootstrap.servers", BOOTSTRAP_SERVERS)
+        .create()
+        .expect("failed to create admin client");
+
+    let new_topics: Vec<NewTopic> = profiles
+        .iter()
+        .map(|p| NewTopic::new(&p.topic, NUM_PARTITIONS, TopicReplication::Fixed(1)))
+        .collect();
+
+    let results = admin
+        .create_topics(&new_topics, &AdminOptions::new())
+        .await
+        .expect("topic creation request failed");
+
+    for result in results {
+        match result {
+            Ok(topic) => println!("  created {topic}"),
+            Err((topic, err)) => {
+                if err == rdkafka::types::RDKafkaErrorCode::TopicAlreadyExists {
+                    println!("  {topic} already exists");
+                } else {
+                    panic!("failed to create {topic}: {err}");
+                }
+            }
+        }
+    }
+}
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
+    let profiles = build_profiles();
+
+    println!("=== Creating {} topics ===", NUM_TOPICS);
+    create_topics(&profiles).await;
+
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", BOOTSTRAP_SERVERS)
         .set("message.max.bytes", "33554432") // 32MB
@@ -69,8 +107,6 @@ async fn main() {
         .set("linger.ms", "50")
         .create()
         .expect("failed to create producer");
-
-    let profiles = build_profiles();
 
     println!("=== Producing data to {} topics ===", NUM_TOPICS);
     println!("Target: {} MB per topic", TARGET_BYTES_PER_TOPIC / ONE_MB);

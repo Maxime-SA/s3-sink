@@ -18,13 +18,13 @@ This starts:
 - **Kafka** (KRaft mode) on `localhost:9092`
 - **MinIO** (S3-compatible) on `localhost:9000` (API) / `localhost:9001` (web UI)
 
-### 2. Create topics and bucket
+### 2. Create MinIO bucket
 
 ```bash
 ./benches/setup.sh
 ```
 
-Creates 10 topics (`topic-1` through `topic-10`, 6 partitions each) and the `sink-output` MinIO bucket.
+Creates the `sink-output` MinIO bucket. Requires `mc` or `mcli` installed.
 
 ### 3. Build
 
