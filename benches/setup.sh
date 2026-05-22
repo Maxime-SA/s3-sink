@@ -8,8 +8,9 @@ echo "=== Waiting for Kafka to be ready ==="
 sleep 10
 
 echo "=== Creating topics ==="
+KAFKA_CONTAINER=$(docker compose -f "$(dirname "$0")/docker-compose.yml" ps -q kafka)
 for i in $(seq 1 10); do
-  docker exec s3-sink-kafka-1 kafka-topics \
+  docker exec "$KAFKA_CONTAINER" kafka-topics \
     --bootstrap-server localhost:9092 \
     --create --topic "topic-${i}" --partitions 6 --if-not-exists
   echo "  created topic-${i}"
