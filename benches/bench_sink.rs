@@ -87,7 +87,7 @@ fn main() {
 
     let uploader = runtime.block_on(S3Upload::new(
         Region::from_static("eu-west-1"),
-        Some("sink-output"),
+        Some("http://localhost:9000"),
         "sink-output".into(),
         None,
         None,
