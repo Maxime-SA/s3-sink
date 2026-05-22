@@ -4,7 +4,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use std::time::Duration;
 
 const BOOTSTRAP_SERVERS: &str = "localhost:9092";
-const NUM_TOPICS: usize = 20;
+const NUM_TOPICS: usize = 10;
 const ONE_KB: u64 = 1024;
 const ONE_MB: u64 = ONE_KB * ONE_KB;
 const TARGET_BYTES_PER_TOPIC: u64 = ONE_MB;

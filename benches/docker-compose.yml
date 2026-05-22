@@ -41,6 +41,9 @@ services:
       # Where Kafka stores partition data on disk (inside the container)
       KAFKA_LOG_DIRS: /var/lib/kafka/data
 
+      # Max message size the broker will accept (default 1MB)
+      KAFKA_MESSAGE_MAX_BYTES: 33554432
+
       # Default partitions when creating a topic without specifying
       KAFKA_NUM_PARTITIONS: 6
 
