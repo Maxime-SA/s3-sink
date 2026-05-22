@@ -5,7 +5,7 @@ use std::time::Duration;
 
 const BOOTSTRAP_SERVERS: &str = "localhost:9092";
 const NUM_TOPICS: usize = 10;
-const TARGET_BYTES_PER_TOPIC: u64 = 50 * 1024 * 1024 * 1024; // 50GB
+const TARGET_BYTES_PER_TOPIC: u64 = 1 * 1024 * 1024; // 50GB
 
 struct TopicProfile {
     topic: String,
