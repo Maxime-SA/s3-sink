@@ -1,3 +1,4 @@
+use futures::stream::{FuturesUnordered, StreamExt};
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
@@ -6,10 +7,10 @@ use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use std::time::Duration;
 
 const BOOTSTRAP_SERVERS: &str = "localhost:9092";
-const NUM_TOPICS: usize = 10;
+const NUM_TOPICS: usize = 30;
 const ONE_KB: u64 = 1024;
 const ONE_MB: u64 = ONE_KB * ONE_KB;
-const TARGET_BYTES_PER_TOPIC: u64 = ONE_MB * 100;
+const TARGET_BYTES_PER_TOPIC: u64 = ONE_MB * ONE_MB;
 const NUM_PARTITIONS: i32 = 6;
 
 struct TopicProfile {
@@ -23,11 +24,12 @@ fn build_profiles() -> Vec<TopicProfile> {
     (1..=NUM_TOPICS)
         .map(|i| {
             let avg_size = match i {
-                1..=5 => 4_096,       // 4KB - small payloads
-                5..=10 => 60_000,     // 60KB - average payloads
-                11..=15 => 500_000,   // 500KB - large payloads
-                15..=17 => 2_000_000, // 2MB - xlarge payloads
-                _ => 10_000_000,      // 2MB - xxlarge payloads
+                1..=5 => 4_096,        // 4KB - small payloads
+                5..=10 => 60_000,      // 60KB - average payloads
+                11..=15 => 500_000,    // 500KB - large payloads
+                15..=20 => 2_000_000,  // 2MB - xlarge payloads
+                20..=25 => 10_000_000, // 10MB - xxlarge payloads
+                _ => 25_000_000,       // 30MB - xxxlarge payloads
             };
             TopicProfile {
                 topic: format!("topic-{i}"),
@@ -136,6 +138,8 @@ async fn produce_topic(producer: &FutureProducer, profile: &TopicProfile) {
     let mut bytes_produced: u64 = 0;
     let mut records_produced: u64 = 0;
     let payload = generate_payload(profile.avg_payload_size);
+    let mut in_flight = FuturesUnordered::new();
+    const MAX_IN_FLIGHT: usize = 1_000;
 
     println!(
         "Filling {} (payload={}KB, target={}MB)...",
@@ -159,13 +163,16 @@ async fn produce_topic(producer: &FutureProducer, profile: &TopicProfile) {
             .payload(&payload)
             .headers(headers);
 
-        if let Err((err, _)) = producer.send(record, Duration::from_secs(30)).await {
-            eprintln!("produce error on {}: {err}", profile.topic);
-            continue;
-        }
-
+        in_flight.push(producer.send(record, Duration::from_secs(30)));
         bytes_produced += payload.len() as u64;
         records_produced += 1;
+
+        // Drain completed futures to bound memory
+        while in_flight.len() >= MAX_IN_FLIGHT {
+            if let Some(Err((err, _))) = in_flight.next().await {
+                eprintln!("produce error on {}: {err}", profile.topic);
+            }
+        }
 
         if records_produced % 10_000 == 0 {
             let mb = bytes_produced as f64 / ONE_MB as f64;
@@ -173,6 +180,13 @@ async fn produce_topic(producer: &FutureProducer, profile: &TopicProfile) {
                 "  {} - {:.2} MB ({} records)",
                 profile.topic, mb, records_produced
             );
+        }
+    }
+
+    // Drain remaining
+    while let Some(result) = in_flight.next().await {
+        if let Err((err, _)) = result {
+            eprintln!("produce error on {}: {err}", profile.topic);
         }
     }
 
