@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use aws_config::{Region, meta::region::ProvideRegion};
 use s3_sink::*;
 use tracing::{error, info};
 
@@ -79,14 +80,24 @@ fn main() {
 
     let config = get_bench_config();
 
-    let uploader = MockUploader;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("could not build Tokio runtime");
+
+    let uploader = runtime.block_on(S3Upload::new(
+        Region::from_static("eu-west-1"),
+        Some("sink-output"),
+        "sink-output".into(),
+        None,
+        None,
+        None,
+    ));
 
     let sink = Sink::new(&config);
 
-    info!("starting benchmark sink");
-
-    match sink.run(uploader) {
-        Ok(_) => info!("sink exited"),
+    match runtime.block_on(sink.event_loop(uploader)) {
+        Ok(_) => info!("sink event loop exited"),
         Err(error) => error!("sink error: {:?}", error),
     };
 }

@@ -79,14 +79,19 @@ fn init_logging() {
 fn main() {
     init_logging();
 
+    let config = get_config();
+
     let mock_uploader = MockUploader; // just for testing
 
-    let config = get_config();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("could not build Tokio runtime");
 
     let sink = Sink::new(&config);
 
-    match sink.run(mock_uploader) {
-        Ok(_) => info!("Tokio runtime exited"),
-        Err(error) => error!("unexpected sink error: {:?}", error),
+    match runtime.block_on(sink.event_loop(mock_uploader)) {
+        Ok(_) => info!("sink event loop exited"),
+        Err(error) => error!("sink error: {:?}", error),
     };
 }

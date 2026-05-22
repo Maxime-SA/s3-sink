@@ -69,19 +69,7 @@ impl<'a> Sink<'a> {
         }
     }
 
-    pub fn run<U: Uploader>(self, uploader: U) -> Result<()> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-
-        runtime.block_on(self.event_loop(uploader))
-    }
-
-    pub async fn run_async<U: Uploader>(self, uploader: U) -> Result<()> {
-        self.event_loop(uploader).await
-    }
-
-    async fn event_loop<U: Uploader>(mut self, uploader: U) -> Result<()> {
+    pub async fn event_loop<U: Uploader>(mut self, uploader: U) -> Result<()> {
         let mut serializer: JsonSerializer = JsonSerializer::new();
 
         let consumer = init_kafka_consumer(&self.config.kafka)?;
