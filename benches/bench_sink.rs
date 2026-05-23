@@ -86,19 +86,22 @@ fn main() {
         .build()
         .expect("could not build Tokio runtime");
 
-    let uploader = runtime.block_on(S3Upload::new(
-        Region::from_static("eu-west-1"),
-        Some("http://localhost:9000"),
-        "sink-output".into(),
-        None,
-        None,
-        None,
-    ));
+    runtime.block_on(async {
+        let uploader = S3Upload::new(
+            Region::from_static("eu-west-1"),
+            Some("http://localhost:9000"),
+            "sink-output".into(),
+            None,
+            None,
+            None,
+        )
+        .await;
 
-    let sink = Sink::new(&config);
+        let sink = Sink::new(&config);
 
-    match runtime.block_on(sink.event_loop(uploader)) {
-        Ok(_) => info!("sink event loop exited"),
-        Err(error) => error!("sink error: {:?}", error),
-    };
+        match sink.event_loop(uploader).await {
+            Ok(_) => info!("sink event loop exited"),
+            Err(error) => error!("sink error: {:?}", error),
+        }
+    });
 }
