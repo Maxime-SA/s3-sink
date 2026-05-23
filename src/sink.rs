@@ -188,6 +188,7 @@ impl<'a> Sink<'a> {
         serializer: &mut JsonSerializer,
         uploader: &U,
     ) -> Result<()> {
+        info!("processing {}", record.topic());
         let (topic_ref, topic_config) = self.topics_config.get_by_topic_name(record.topic())?;
 
         let stream_id = self.stream_ids.get(record, &topic_config.router);
