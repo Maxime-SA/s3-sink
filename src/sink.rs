@@ -1,22 +1,19 @@
+use crate::cache::{Cache, StreamId};
 use crate::envelopes::{ToUpload, UploadResult};
-use crate::error::SinkError;
 use crate::files::FileRegistry;
 use crate::json_serializer::JsonSerializer;
 use crate::kafka_consumer::{CustomContext, init_kafka_consumer};
 use crate::offset_registry::OffsetRegistry;
-use crate::record::{StreamId, StreamIdCache};
 use crate::stats::Stats;
+use crate::timer_interrupts::TimerInterrupts;
 use crate::uploader::Uploader;
-use crate::{BoxFuture, Result, SinkConfig, TimersConfig, TopicConfig};
+use crate::{BoxFuture, Result, SinkConfig};
 use futures::stream::{FuturesUnordered, StreamExt};
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::{BorrowedMessage, Message};
-use std::collections::HashMap;
 use std::fs;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tokio::select;
-use tokio::time::{Interval, interval};
 use tracing::{error, info, warn};
 
 /*
@@ -35,8 +32,7 @@ pub struct Sink<'a> {
     offset_registry: OffsetRegistry, // commit registry to track offsets that have been uploaded
     upload_pool: S3UploadPool, // pool of futures that upload files to S3
     timer_interrupts: TimerInterrupts, // timer interrupts to handle specific tasks
-    stream_ids: StreamIdCache, // StreamIds cache
-    topics_config: TopicConfigCache, // topic name and config cache
+    cache: Cache,
     stats: Stats,
 }
 impl<'a> Sink<'a> {
@@ -54,13 +50,10 @@ impl<'a> Sink<'a> {
         let upload_pool = FuturesUnordered::new();
 
         info!("initializing TimerInterrupts");
-        let timer_interrupts = TimerInterrupts::new(&config.timers);
+        let timer_interrupts = TimerInterrupts::new(config);
 
-        info!("initializing StreamIdCache");
-        let stream_ids = StreamIdCache::new();
-
-        info!("initializing TopicConfigCache");
-        let topics_config = TopicConfigCache::new(config);
+        info!("initializing Cache");
+        let cache = Cache::new(config);
 
         info!("initializing Stats");
         let stats: Stats = Stats::new();
@@ -69,10 +62,9 @@ impl<'a> Sink<'a> {
             config,
             file_registry,
             offset_registry,
-            topics_config,
             upload_pool,
             timer_interrupts,
-            stream_ids,
+            cache,
             stats,
         }
     }
@@ -139,7 +131,6 @@ impl<'a> Sink<'a> {
         for id in self.file_registry.files_older_than(cut_off) {
             self.seal_and_upload(&id, uploader)?;
         }
-
         Ok(())
     }
 
@@ -195,25 +186,23 @@ impl<'a> Sink<'a> {
         serializer: &mut JsonSerializer,
         uploader: &U,
     ) -> Result<()> {
-        let (topic_ref, topic_config) = self.topics_config.get_by_topic_name(record.topic())?;
-
-        let stream_id = self.stream_ids.get_id(record, &topic_config.router);
+        let metadata = self.cache.get_or_create_record_metadata(record)?;
 
         self.offset_registry.add_consumed(
-            &stream_id,
-            topic_ref,
+            &metadata.stream_id,
+            metadata.topic_name,
             record.partition(),
             record.offset(),
         );
 
-        if let Some(bytes) = serializer.serialize(record, &topic_config.decoder)? {
+        if let Some(bytes) = serializer.serialize(record, &metadata.config.decoder)? {
             self.stats.record_count += 1;
             self.stats.bytes_consumed += bytes.len() as u64;
 
-            self.file_registry.write_all(&stream_id, bytes)?;
+            self.file_registry.write_all(&metadata.stream_id, bytes)?;
 
-            if self.ready_to_upload(self.file_registry.raw_file_size_b(&stream_id)?) {
-                self.seal_and_upload(&stream_id, uploader)?;
+            if self.ready_to_upload(self.file_registry.raw_file_size_b(&metadata.stream_id)?) {
+                self.seal_and_upload(&metadata.stream_id, uploader)?;
                 self.stats.files_sealed += 1;
             }
         }
@@ -225,9 +214,7 @@ impl<'a> Sink<'a> {
         let sealed_file = self.file_registry.seal(id)?;
         let sealed_offsets = self.offset_registry.seal(id)?;
 
-        let router = self.stream_ids.get_router(id).ok_or_else(|| {
-            SinkError::Configuration(format!("missing topic configuration for '{id}'"))
-        })?;
+        let router = self.cache.get_router(id)?;
 
         self.upload_pool.push(uploader.upload(ToUpload::new(
             router.partition_spec(id),
@@ -236,54 +223,6 @@ impl<'a> Sink<'a> {
         )));
 
         Ok(())
-    }
-}
-
-struct TimerInterrupts {
-    fairness_scheduler_tick: Interval,
-    commit_tick: Interval,
-    upload_tick: Interval,
-}
-impl TimerInterrupts {
-    fn new(config: &TimersConfig) -> Self {
-        // manage per-topic consumption budget
-        let fairness_scheduler_tick =
-            interval(Duration::from_millis(config.fairness_scheduler_tick_ms));
-
-        // commit accumulated offsets
-        let commit_tick = interval(Duration::from_millis(config.commit_tick_ms));
-
-        // upload dormant files
-        let upload_tick = interval(Duration::from_millis(config.upload_tick_ms));
-
-        TimerInterrupts {
-            fairness_scheduler_tick,
-            commit_tick,
-            upload_tick,
-        }
-    }
-}
-
-struct TopicConfigCache {
-    topic_cache: HashMap<Rc<str>, TopicConfig>, // map of topic_name -> topic_config
-}
-impl TopicConfigCache {
-    fn new(config: &SinkConfig) -> Self {
-        let mut topic_cache = HashMap::new();
-
-        for (topic_config, topics) in &config.kafka.input_topics {
-            for topic in topics {
-                topic_cache.insert(topic.clone(), *topic_config);
-            }
-        }
-
-        Self { topic_cache }
-    }
-
-    fn get_by_topic_name(&self, topic_name: &str) -> Result<(&Rc<str>, &TopicConfig)> {
-        self.topic_cache.get_key_value(topic_name).ok_or_else(|| {
-            SinkError::Configuration(format!("missing topic configuration for '{topic_name}'"))
-        })
     }
 }
 

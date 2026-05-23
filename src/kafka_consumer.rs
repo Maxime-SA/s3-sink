@@ -7,6 +7,7 @@ use rdkafka::{
     config::FromClientConfigAndContext,
     consumer::{Consumer, ConsumerContext, StreamConsumer},
 };
+use std::borrow::Borrow;
 use tracing::info;
 
 /*
@@ -96,7 +97,7 @@ pub fn init_kafka_consumer(config: &KafkaConfig) -> Result<StreamConsumer<Custom
     let topics_to_subscribe = config
         .input_topics
         .iter()
-        .flat_map(|(_, topics)| topics.iter().map(|topic| topic.as_ref()))
+        .flat_map(|(_, topics)| topics.iter().map(|topic| topic.borrow()))
         .collect::<Vec<&str>>();
 
     consumer.subscribe(&topics_to_subscribe)?;

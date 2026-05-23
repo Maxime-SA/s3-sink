@@ -1,3 +1,4 @@
+mod cache;
 mod config;
 mod envelopes;
 mod error;
@@ -8,6 +9,7 @@ mod offset_registry;
 mod record;
 mod sink;
 mod stats;
+mod timer_interrupts;
 mod uploader;
 
 pub use config::*;
@@ -15,3 +17,4 @@ pub use error::Result;
 pub use record::{RecordDecoder, RouterStrategy};
 pub use sink::Sink;
 pub use uploader::{BoxFuture, MockUploader, S3Upload, Uploader};
+pub use cache::TopicName;

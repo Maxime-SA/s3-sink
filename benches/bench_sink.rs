@@ -26,8 +26,8 @@ fn get_bench_config() -> SinkConfig {
         router: RouterStrategy::TopicVersion,
     };
 
-    let topics: Vec<Rc<str>> = (1..=NUM_TOPICS)
-        .map(|i| Rc::from(format!("topic-{i}").as_str()))
+    let topics: Vec<TopicName> = (1..=NUM_TOPICS)
+        .map(|i| TopicName(Rc::from(format!("topic-{i}").as_str())))
         .collect();
 
     let kafka_config = KafkaConfig {
@@ -38,7 +38,7 @@ fn get_bench_config() -> SinkConfig {
                     decoder: RecordDecoder::JsonStringDecoder,
                     router: RouterStrategy::Dlq,
                 },
-                vec!["dlq".into()],
+                vec![TopicName(Rc::from("dlq"))],
             ),
         ],
         consumer_properties: BENCH_KAFKA_CONFIG
@@ -52,7 +52,6 @@ fn get_bench_config() -> SinkConfig {
 
     let timers_config = TimersConfig {
         commit_tick_ms: 15_000,
-        upload_tick_ms: 30_000,
         fairness_scheduler_tick_ms: 10_000_000,
     };
 

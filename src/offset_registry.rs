@@ -1,15 +1,16 @@
 use crate::Result;
+use crate::cache::StreamId;
+use crate::cache::TopicName;
 use crate::envelopes::SealedOffsets;
 use crate::error::SinkError;
-use crate::record::StreamId;
 use rdkafka::TopicPartitionList;
+use std::borrow::Borrow;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::rc::Rc;
 
-pub type OffsetsVec = HashMap<(Rc<str>, i32), Vec<i64>>;
-pub type OffsetsTree = HashMap<(Rc<str>, i32), BTreeSet<i64>>;
+pub type OffsetsVec = HashMap<(TopicName, i32), Vec<i64>>;
+pub type OffsetsTree = HashMap<(TopicName, i32), BTreeSet<i64>>;
 
 /*
 Todo:
@@ -19,7 +20,6 @@ Todo:
 */
 
 pub struct OffsetRegistry {
-    gc_buf: Vec<(Rc<str>, i32)>,
     consumed: HashMap<StreamId, OffsetsVec>,
     uploaded: OffsetsTree,
 }
@@ -27,7 +27,6 @@ pub struct OffsetRegistry {
 impl OffsetRegistry {
     pub fn new() -> Self {
         OffsetRegistry {
-            gc_buf: Vec::new(),
             consumed: HashMap::new(),
             uploaded: OffsetsTree::new(),
         }
@@ -36,13 +35,13 @@ impl OffsetRegistry {
     pub fn add_consumed(
         &mut self,
         id: &StreamId,
-        topic_name: &Rc<str>,
+        topic_name: TopicName,
         partition: i32,
         offset: i64,
     ) {
         let consumed_offsets = self.get_mut_stream_offsets_or_create(id);
         consumed_offsets
-            .entry((topic_name.clone(), partition))
+            .entry((topic_name, partition))
             .or_default()
             .push(offset);
     }
@@ -75,13 +74,12 @@ impl OffsetRegistry {
     }
 
     pub fn committable_offsets(&mut self) -> Result<TopicPartitionList> {
-        self.gc_buf.clear();
-
         let mut result = TopicPartitionList::new();
+        let mut keys_for_gc = vec![];
 
         for ((topic, partition), offsets) in &mut self.uploaded {
             let Some(&first) = offsets.iter().next() else {
-                self.gc_buf.push((topic.clone(), *partition));
+                keys_for_gc.push((topic.clone(), *partition));
                 continue;
             };
 
@@ -99,7 +97,7 @@ impl OffsetRegistry {
             }
 
             result.add_partition_offset(
-                topic,
+                topic.borrow(),
                 *partition,
                 rdkafka::Offset::Offset(offset_to_commit),
             )?;
@@ -110,13 +108,13 @@ impl OffsetRegistry {
 
             // track redundant topic partition keys
             if offsets.is_empty() {
-                self.gc_buf.push((topic.clone(), *partition));
+                keys_for_gc.push((topic.clone(), *partition));
             }
         }
 
         // garbage collect any redundant topic partition keys
-        for key in &self.gc_buf {
-            self.uploaded.remove(key);
+        for key in keys_for_gc {
+            self.uploaded.remove(&key);
         }
 
         Ok(result)

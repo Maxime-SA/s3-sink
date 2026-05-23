@@ -1,70 +1,11 @@
 use rdkafka::{Message, message::Headers};
-use std::{
-    borrow::Borrow,
-    collections::{HashMap, HashSet},
-    fmt,
-    rc::Rc,
-};
+
+use crate::cache::StreamId;
 
 /*
 Todo:
 - Review unit tests
 */
-
-/*
-A Stream represents a flow of records from Kafka.
-Each StreamId is derived from the record using a RouterStrategy.
-The StreamId is used to route the record to its specific file and track offsets.
-*/
-#[derive(Eq, Hash, PartialEq, Clone)]
-pub struct StreamId(Rc<str>);
-impl fmt::Display for StreamId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl Borrow<str> for StreamId {
-    fn borrow(&self) -> &str {
-        &self.0
-    }
-}
-
-/*
-We cache StreamIds to avoid per-record allocation.
-We use a Reference Counted (Rc) smart pointer to track multiple ownership.
-*/
-pub struct StreamIdCache {
-    buf: String,
-    id_cache: HashSet<StreamId>,
-    router_cache: HashMap<StreamId, RouterStrategy>,
-}
-impl StreamIdCache {
-    pub fn new() -> Self {
-        StreamIdCache {
-            buf: String::new(),
-            id_cache: HashSet::new(),
-            router_cache: HashMap::new(),
-        }
-    }
-
-    pub fn get_id<M: Message>(&mut self, record: &M, strategy: &RouterStrategy) -> StreamId {
-        strategy.write_id(record, &mut self.buf);
-
-        if let Some(cached) = self.id_cache.get(self.buf.as_str()) {
-            cached.clone()
-        } else {
-            let id = StreamId(Rc::from(self.buf.as_str()));
-            self.router_cache.insert(id.clone(), *strategy);
-            self.id_cache.insert(id.clone());
-            id
-        }
-    }
-
-    pub fn get_router(&mut self, id: &StreamId) -> Option<&RouterStrategy> {
-        self.router_cache.get(id)
-    }
-}
 
 /*
 RouterStrategy defines a mapping between a record and its StreamId.
@@ -114,7 +55,7 @@ impl RouterStrategy {
         }
     }
 
-    fn write_id<M: Message>(&self, record: &M, buf: &mut String) {
+    pub fn write_id<M: Message>(&self, record: &M, buf: &mut String) {
         buf.clear();
         match self {
             Self::TopicVersion => Self::group_by_topic_version(record, buf),

@@ -31,7 +31,10 @@ fn get_config() -> SinkConfig {
     };
 
     let kafka_config = KafkaConfig {
-        input_topics: vec![(topic_config, vec![Rc::from(String::from("topic-1"))])],
+        input_topics: vec![(
+            topic_config,
+            vec![TopicName(Rc::from(String::from("topic-1")))],
+        )],
         consumer_properties: LOCAL_KAFKA_CONFIG
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -43,7 +46,6 @@ fn get_config() -> SinkConfig {
 
     let timers_config = TimersConfig {
         commit_tick_ms: 30000,
-        upload_tick_ms: 30000,
         fairness_scheduler_tick_ms: 1000,
     };
 

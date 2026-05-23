@@ -1,6 +1,5 @@
-use rdkafka::{Message, message::Headers};
-
 use crate::{RecordDecoder, Result, error::SinkError};
+use rdkafka::{Message, message::Headers};
 
 /*
 Assumptions:
@@ -11,6 +10,7 @@ Assumptions:
 Thoughts:
 - These are not validated, if they are not respected, data will be corrupted.
 - Not the most robust SerDe but for our use case, I think the tradeoffs are worth it.
+- Buffer does not trim down once capacity is increased.
 
 Todo:
 - Review unit tests

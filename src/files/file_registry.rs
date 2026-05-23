@@ -1,5 +1,5 @@
 use crate::{
-    Result, envelopes::SealedFile, error::SinkError, files::file_io::ActiveFile, record::StreamId,
+    Result, cache::StreamId, envelopes::SealedFile, error::SinkError, files::file_io::ActiveFile,
 };
 use std::{
     collections::{HashMap, hash_map::Entry},

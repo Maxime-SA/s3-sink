@@ -1,7 +1,6 @@
+use crate::{RecordDecoder, RouterStrategy, cache::TopicName};
 use aws_config::Region;
-
-use crate::{RecordDecoder, RouterStrategy};
-use std::{path::PathBuf, rc::Rc};
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug)]
 pub struct TopicConfig {
@@ -10,7 +9,7 @@ pub struct TopicConfig {
 }
 
 pub struct KafkaConfig {
-    pub input_topics: Vec<(TopicConfig, Vec<Rc<str>>)>, // input topics to consume
+    pub input_topics: Vec<(TopicConfig, Vec<TopicName>)>, // input topics to consume
     pub consumer_properties: Vec<(String, String)>, // consumer client properties (i.e. (key, value))
     pub region: Region,
     pub token_lifetime_ms: i64,
@@ -24,7 +23,6 @@ pub struct FileConfig {
 }
 
 pub struct TimersConfig {
-    pub upload_tick_ms: u64, // frequency at which to check for dormant files
     pub commit_tick_ms: u64, // frequency at which to commit offsets back to Kafka
     pub fairness_scheduler_tick_ms: u64, // frequency at which to review topic consumption budget
 }

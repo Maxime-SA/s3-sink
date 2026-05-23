@@ -2,4 +2,4 @@ mod decoder;
 mod router;
 
 pub use decoder::RecordDecoder;
-pub use router::{RouterStrategy, StreamId, StreamIdCache};
+pub use router::RouterStrategy;
