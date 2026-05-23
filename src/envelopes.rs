@@ -52,6 +52,10 @@ impl ToUpload {
     pub fn raw_size_b(&self) -> u64 {
         self.file.raw_size_b()
     }
+
+    pub fn compressed_size_b(&self) -> u64 {
+        self.file.compressed_size_b()
+    }
 }
 
 #[derive(Debug, PartialEq)]

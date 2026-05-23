@@ -9,20 +9,19 @@ use std::collections::hash_map::Entry;
 use std::rc::Rc;
 
 pub type OffsetsVec = HashMap<(Rc<str>, i32), Vec<i64>>;
-pub type OffsetsHeap = HashMap<(Rc<str>, i32), BTreeSet<i64>>;
+pub type OffsetsTree = HashMap<(Rc<str>, i32), BTreeSet<i64>>;
 
 /*
 Todo:
 - Review unit tests
 - Backpressure:
     - Offsets awaiting commit
-- Avoid StreamId allocation
 */
 
 pub struct OffsetRegistry {
     gc_buf: Vec<(Rc<str>, i32)>,
     consumed: HashMap<StreamId, OffsetsVec>,
-    uploaded: OffsetsHeap,
+    uploaded: OffsetsTree,
 }
 
 impl OffsetRegistry {
@@ -30,7 +29,7 @@ impl OffsetRegistry {
         OffsetRegistry {
             gc_buf: Vec::new(),
             consumed: HashMap::new(),
-            uploaded: OffsetsHeap::new(),
+            uploaded: OffsetsTree::new(),
         }
     }
 
@@ -109,12 +108,13 @@ impl OffsetRegistry {
             let new = offsets.split_off(&offset_to_commit);
             *offsets = new;
 
-            // garbage collect any redundant topic partition keys
+            // track redundant topic partition keys
             if offsets.is_empty() {
                 self.gc_buf.push((topic.clone(), *partition));
             }
         }
 
+        // garbage collect any redundant topic partition keys
         for key in &self.gc_buf {
             self.uploaded.remove(key);
         }

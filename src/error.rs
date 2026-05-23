@@ -1,4 +1,3 @@
-use aws_sdk_s3::primitives::ByteStreamError;
 use rdkafka::error::KafkaError;
 use std::io;
 use std::result;

@@ -4,18 +4,20 @@ use aws_config::Region;
 use s3_sink::*;
 use tracing::{error, info};
 
-const NUM_TOPICS: usize = 30;
-const BENCH_KAFKA_CONFIG: [(&str, &str); 10] = [
+const NUM_TOPICS: usize = 50;
+const BENCH_KAFKA_CONFIG: [(&str, &str); 12] = [
     ("bootstrap.servers", "localhost:9092"),
     ("group.id", "s3-sink-bench"),
     ("client.id", "s3-sink-bench"),
     ("auto.offset.reset", "earliest"),
     ("enable.auto.offset.store", "false"),
     ("enable.auto.commit", "false"),
-    ("fetch.max.bytes", "134217728"),           // 128MB
-    ("max.partition.fetch.bytes", "36700160"),  // 35MB
-    ("receive.message.max.bytes", "157286400"), // 150MB
+    ("fetch.max.bytes", "134217728"),
+    ("max.partition.fetch.bytes", "36700160"),
+    ("receive.message.max.bytes", "157286400"),
     ("security.protocol", "PLAINTEXT"),
+    ("group.protocol", "classic"),
+    ("debug", "broker,security,topic,consumer"),
 ];
 
 fn get_bench_config() -> SinkConfig {
@@ -29,7 +31,16 @@ fn get_bench_config() -> SinkConfig {
         .collect();
 
     let kafka_config = KafkaConfig {
-        input_topics: vec![(topic_config, topics)],
+        input_topics: vec![
+            (topic_config, topics),
+            (
+                TopicConfig {
+                    decoder: RecordDecoder::JsonStringDecoder,
+                    router: RouterStrategy::Dlq,
+                },
+                vec!["dlq".into()],
+            ),
+        ],
         consumer_properties: BENCH_KAFKA_CONFIG
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -40,20 +51,20 @@ fn get_bench_config() -> SinkConfig {
     };
 
     let timers_config = TimersConfig {
-        commit_tick_ms: 60_000,
-        upload_tick_ms: 1000 * 60 * 5,
+        commit_tick_ms: 15_000,
+        upload_tick_ms: 30_000,
         fairness_scheduler_tick_ms: 10_000_000,
     };
 
     let files_config = FileConfig {
         scratch_directory: "/tmp/s3-sink-scratch".into(),
-        target_file_size_b: 120 * 1024 * 1024, // 4MB
+        target_file_size_b: 1024 * 1024 * 50,
         compression_level: 3,
     };
 
     let upload_config = UploadConfig {
         max_concurrent_uploads: 50,
-        max_active_file_timeout_ms: 1000 * 60 * 5,
+        max_active_file_timeout_ms: 1000 * 60 * 1,
     };
 
     SinkConfig {

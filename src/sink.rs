@@ -7,7 +7,7 @@ use crate::offset_registry::OffsetRegistry;
 use crate::record::{StreamId, StreamIdCache};
 use crate::stats::Stats;
 use crate::uploader::Uploader;
-use crate::{BoxFuture, Result, RouterStrategy, SinkConfig, TimersConfig, TopicConfig};
+use crate::{BoxFuture, Result, SinkConfig, TimersConfig, TopicConfig};
 use futures::stream::{FuturesUnordered, StreamExt};
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::{BorrowedMessage, Message};
@@ -17,7 +17,15 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tokio::select;
 use tokio::time::{Interval, interval};
-use tracing::{debug_span, error, info};
+use tracing::{error, info, warn};
+
+/*
+Todo:
+- Handle Kafka rebalance appropriately
+- Timer interrupts for signal such as SIGTERM
+- Backpressure for in-flight uploads, local files, offsets in registry, ...
+- Fairness Scheduler
+*/
 
 type S3UploadPool = FuturesUnordered<BoxFuture>;
 
@@ -72,6 +80,7 @@ impl<'a> Sink<'a> {
     pub async fn event_loop<U: Uploader>(mut self, uploader: U) -> Result<()> {
         let mut serializer: JsonSerializer = JsonSerializer::new();
 
+        info!("initializing StreamConsumer");
         let consumer = init_kafka_consumer(&self.config.kafka)?;
 
         loop {
@@ -82,23 +91,18 @@ impl<'a> Sink<'a> {
                 default behaviour: randomly poll the async expressions one after the other
                 'biased' behaviour: polls the async expressions sequentially
                  */
-                biased;
-
                 // 1. an upload to S3 has completed
                 Some(result) = self.upload_pool.next() => {
-                    let _span = debug_span!("upload_result").entered();
                     self.process_upload_result(result, &uploader)?;
                 }
 
                 // 2. timer interrupt to commit offsets
                 _ = self.timer_interrupts.commit_tick.tick() => {
-                    let _span = debug_span!("commit_tick").entered();
                     self.process_commit_tick(&consumer)?;
                 }
 
                 // 3. timer interrupt to upload any dormant files
                 _ = self.timer_interrupts.upload_tick.tick() => {
-                    let _span = debug_span!("upload_tick").entered();
                     self.process_upload_tick(&uploader)?;
                 }
 
@@ -109,13 +113,7 @@ impl<'a> Sink<'a> {
 
                 // 5. process Kafka record
                 maybe_next_record = consumer.recv() => {
-                    let msg = maybe_next_record?;
-                    let _span = debug_span!(
-                        "process_record",
-                        topic = msg.topic(),
-                        payload_size_b = msg.payload().map_or(0, |p| p.len()),
-                    ).entered();
-                    self.process_record(&msg, &mut serializer, &uploader)?;
+                    self.process_record(&maybe_next_record?, &mut serializer, &uploader)?;
                 }
             }
         }
@@ -128,6 +126,7 @@ impl<'a> Sink<'a> {
         );
 
         let offsets_to_commit = self.offset_registry.committable_offsets()?;
+
         if offsets_to_commit.count() > 0 {
             consumer.commit(&offsets_to_commit, rdkafka::consumer::CommitMode::Async)?;
         }
@@ -137,7 +136,6 @@ impl<'a> Sink<'a> {
     fn process_upload_tick<U: Uploader>(&mut self, uploader: &U) -> Result<()> {
         let cut_off =
             Instant::now() - Duration::from_millis(self.config.uploads.max_active_file_timeout_ms);
-
         for id in self.file_registry.files_older_than(cut_off) {
             self.seal_and_upload(&id, uploader)?;
         }
@@ -161,11 +159,11 @@ impl<'a> Sink<'a> {
             // can we add backoff here or a max retry?
             UploadResult::Failure(to_upload, sink_error) => {
                 error!("UploadResult::Failure: {:?}", sink_error);
-                self.stats.uploads_failed += 1;
+                self.stats.failed_uploads += 1;
                 self.upload_pool.push(uploader.upload(to_upload));
             }
             UploadResult::Success(file_to_gc, offsets) => {
-                self.stats.uploads_ok += 1;
+                self.stats.successful_uploads += 1;
                 self.offset_registry.add_uploaded(offsets);
                 let _ = fs::remove_file(file_to_gc);
             }
@@ -177,9 +175,18 @@ impl<'a> Sink<'a> {
     Simple rate limiter for the number of in-flight uploads.
     Purpose is to limit the amount of memory used for uploads.
      */
-    fn ready_to_upload(&self, raw_size_b: u64) -> bool {
-        raw_size_b >= self.config.files.target_file_size_b
-            && (self.upload_pool.len() as u64) < self.config.uploads.max_concurrent_uploads
+    fn ready_to_upload(&mut self, raw_size_b: u64) -> bool {
+        let backpressure_control =
+            (self.upload_pool.len() as u64) < self.config.uploads.max_concurrent_uploads;
+
+        let is_ready = raw_size_b >= self.config.files.target_file_size_b && backpressure_control;
+
+        if backpressure_control {
+            self.stats.uploads_backpressure_count += 1;
+            warn!("too many in-flight uploads, applying backpressure");
+        }
+
+        is_ready
     }
 
     fn process_record<U: Uploader>(
@@ -188,10 +195,9 @@ impl<'a> Sink<'a> {
         serializer: &mut JsonSerializer,
         uploader: &U,
     ) -> Result<()> {
-        info!("processing {}", record.topic());
         let (topic_ref, topic_config) = self.topics_config.get_by_topic_name(record.topic())?;
 
-        let stream_id = self.stream_ids.get(record, &topic_config.router);
+        let stream_id = self.stream_ids.get_id(record, &topic_config.router);
 
         self.offset_registry.add_consumed(
             &stream_id,
@@ -201,18 +207,16 @@ impl<'a> Sink<'a> {
         );
 
         if let Some(bytes) = serializer.serialize(record, &topic_config.decoder)? {
-            self.stats.records += 1;
-            self.stats.bytes += bytes.len() as u64;
+            self.stats.record_count += 1;
+            self.stats.bytes_consumed += bytes.len() as u64;
 
             self.file_registry.write_all(&stream_id, bytes)?;
 
             if self.ready_to_upload(self.file_registry.raw_file_size_b(&stream_id)?) {
                 self.seal_and_upload(&stream_id, uploader)?;
-                self.stats.seals += 1;
+                self.stats.files_sealed += 1;
             }
         }
-
-        // todo: fairness scheduler
 
         Ok(())
     }
@@ -221,7 +225,9 @@ impl<'a> Sink<'a> {
         let sealed_file = self.file_registry.seal(id)?;
         let sealed_offsets = self.offset_registry.seal(id)?;
 
-        let router = self.topics_config.get_router_by_stream_id(id)?;
+        let router = self.stream_ids.get_router(id).ok_or_else(|| {
+            SinkError::Configuration(format!("missing topic configuration for '{id}'"))
+        })?;
 
         self.upload_pool.push(uploader.upload(ToUpload::new(
             router.partition_spec(id),
@@ -260,7 +266,6 @@ impl TimerInterrupts {
 
 struct TopicConfigCache {
     topic_cache: HashMap<Rc<str>, TopicConfig>, // map of topic_name -> topic_config
-    id_cache: HashMap<StreamId, TopicConfig>,   // map of stream_id -> topic_config
 }
 impl TopicConfigCache {
     fn new(config: &SinkConfig) -> Self {
@@ -272,21 +277,12 @@ impl TopicConfigCache {
             }
         }
 
-        Self {
-            topic_cache,
-            id_cache: HashMap::new(),
-        }
+        Self { topic_cache }
     }
 
     fn get_by_topic_name(&self, topic_name: &str) -> Result<(&Rc<str>, &TopicConfig)> {
         self.topic_cache.get_key_value(topic_name).ok_or_else(|| {
             SinkError::Configuration(format!("missing topic configuration for '{topic_name}'"))
-        })
-    }
-
-    fn get_router_by_stream_id(&self, id: &StreamId) -> Result<&RouterStrategy> {
-        self.id_cache.get(id).map(|v| &v.router).ok_or_else(|| {
-            SinkError::Configuration(format!("missing topic configuration for '{id}'"))
         })
     }
 }

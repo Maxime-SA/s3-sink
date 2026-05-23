@@ -55,6 +55,12 @@ services:
       # All brokers in a cluster must share the same ID
       CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
 
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
     ports:
       # host_port:container_port
       # Your sink connects to localhost:9092, Docker forwards to container's 9092

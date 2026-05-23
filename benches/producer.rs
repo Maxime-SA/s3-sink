@@ -4,63 +4,90 @@ use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
 use rdkafka::message::OwnedHeaders;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
+use std::io::Write;
 use std::time::Duration;
 
 const BOOTSTRAP_SERVERS: &str = "localhost:9092";
-const NUM_TOPICS: usize = 30;
+const NUM_TOPICS: usize = 50;
 const ONE_KB: u64 = 1024;
 const ONE_MB: u64 = ONE_KB * ONE_KB;
-const TARGET_BYTES_PER_TOPIC: u64 = ONE_MB * ONE_MB;
+const TARGET_BYTES_PER_TOPIC: u64 = ONE_MB * ONE_KB * 2;
 const NUM_PARTITIONS: i32 = 6;
 
 struct TopicProfile {
     topic: String,
     avg_payload_size: usize,
-    schema_name: &'static str,
-    schema_version: &'static str,
+    schema_name: String,
+    schema_version: String,
 }
 
 fn build_profiles() -> Vec<TopicProfile> {
-    (1..=NUM_TOPICS)
+    let mut profiles: Vec<TopicProfile> = (1..=NUM_TOPICS)
         .map(|i| {
             let avg_size = match i {
-                1..=5 => 4_096,        // 4KB - small payloads
-                5..=10 => 60_000,      // 60KB - average payloads
-                11..=15 => 500_000,    // 500KB - large payloads
-                15..=20 => 2_000_000,  // 2MB - xlarge payloads
-                20..=25 => 10_000_000, // 10MB - xxlarge payloads
-                _ => 25_000_000,       // 30MB - xxxlarge payloads
+                1..=25 => 32_096,
+                26..=50 => 100_000,
+                51..=75 => 500_000,
+                76..=100 => 1_050_000,
+                101..=125 => 10_000_000,
+                126..=140 => 20_000_000,
+                _ => 30_000_000,
             };
             TopicProfile {
                 topic: format!("topic-{i}"),
                 avg_payload_size: avg_size,
-                schema_name: &"test_schema",
-                schema_version: &"1",
+                schema_name: format!("topic-{i}"),
+                schema_version: format!("version-{i}"),
             }
         })
-        .collect()
+        .collect();
+
+    // DLQ topic with properly formatted JSON payloads (no magic bytes)
+    profiles.push(TopicProfile {
+        topic: "dlq".to_string(),
+        avg_payload_size: 4_096,
+        schema_name: "dlq".to_string(),
+        schema_version: "1".to_string(),
+    });
+
+    profiles
 }
 
-fn generate_payload(size: usize) -> Vec<u8> {
-    // Simulate JsonSchema: 5 magic bytes + JSON body
+fn generate_payload(size: usize, record_id: u64) -> Vec<u8> {
     let mut payload = Vec::with_capacity(size);
-    payload.extend_from_slice(b"00001"); // magic bytes
-
-    // Generate a simple JSON payload to fill the rest
-    payload.push(b'{');
-    payload.extend_from_slice(b"\"event\":\"benchmark\"");
-
-    // Pad with realistic-looking data
-    let padding_needed = size.saturating_sub(payload.len() + 1);
-    if padding_needed > 0 {
-        payload.extend_from_slice(b",\"data\":\"");
-        let fill_len = padding_needed.saturating_sub(10);
-        payload.extend(std::iter::repeat(b'x').take(fill_len));
-        payload.push(b'"');
+    payload.extend_from_slice(b"00001");
+    // Generate pseudo-random but valid JSON
+    write!(
+        payload,
+        r#"{{"id":"{}","ts":"2025-01-01T00:00:00Z","value":{},"tags":[{},{},{}],"data":""#,
+        uuid::Uuid::new_v4(),
+        record_id,
+        record_id % 100,
+        record_id % 7,
+        record_id * 31
+    )
+    .unwrap();
+    // Fill with varied bytes instead of repeated 'x'
+    let fill_len = size.saturating_sub(payload.len() + 2);
+    for i in 0..fill_len {
+        payload.push(b'A' + ((i + record_id as usize) % 26) as u8);
     }
-
-    payload.push(b'}');
+    payload.extend_from_slice(b"\"}");
     payload
+}
+
+fn generate_dlq_payload(record_id: u64) -> Vec<u8> {
+    let json = format!(
+        r#"{{"error":"DeserializationException","message":"Failed to decode record","record_id":{},"topic":"topic-{}","partition":{},"offset":{},"timestamp":"2025-06-15T12:{}:{}Z","original_payload":"base64encodeddata{}","stack_trace":"org.apache.kafka.common.errors.SerializationException: Error deserializing..."}}"#,
+        record_id,
+        (record_id % 30) + 1,
+        record_id % 6,
+        record_id * 3,
+        record_id % 60,
+        record_id % 60,
+        record_id
+    );
+    json.into_bytes()
 }
 
 async fn create_topics(profiles: &[TopicProfile]) {
@@ -137,7 +164,27 @@ async fn main() {
 async fn produce_topic(producer: &FutureProducer, profile: &TopicProfile) {
     let mut bytes_produced: u64 = 0;
     let mut records_produced: u64 = 0;
-    let payload = generate_payload(profile.avg_payload_size);
+
+    // Pre-generate a pool of varied payloads to avoid lifetime issues with in-flight futures
+    // while still giving zstd realistic (non-identical) data to compress
+    // Scale pool size down for large payloads to avoid OOM
+    let is_dlq = profile.topic == "dlq";
+    let pool_size = match profile.avg_payload_size {
+        0..=65_536 => 128,
+        65_537..=1_000_000 => 32,
+        1_000_001..=10_000_000 => 8,
+        _ => 2,
+    };
+    let payload_pool: Vec<Vec<u8>> = (0..pool_size)
+        .map(|i| {
+            if is_dlq {
+                generate_dlq_payload(i)
+            } else {
+                generate_payload(profile.avg_payload_size, i)
+            }
+        })
+        .collect();
+
     let mut in_flight = FuturesUnordered::new();
 
     // Scale concurrency down for large payloads to avoid QueueFull
@@ -156,18 +203,26 @@ async fn produce_topic(producer: &FutureProducer, profile: &TopicProfile) {
     );
 
     while bytes_produced < TARGET_BYTES_PER_TOPIC {
+        let payload = &payload_pool[records_produced as usize % payload_pool.len()];
+
+        let schema_name = if profile.schema_name != "dlq" {
+            &profile.schema_name
+        } else {
+            "topic-A"
+        };
+
         let headers = OwnedHeaders::new()
             .insert(rdkafka::message::Header {
                 key: "schema_name",
-                value: Some(profile.schema_name.as_bytes()),
+                value: Some(schema_name.as_bytes()),
             })
             .insert(rdkafka::message::Header {
                 key: "schema_version",
                 value: Some(profile.schema_version.as_bytes()),
             });
 
-        let record: FutureRecord<'_, str, Vec<u8>> = FutureRecord::to(&profile.topic)
-            .payload(&payload)
+        let record: FutureRecord<'_, str, [u8]> = FutureRecord::to(&profile.topic)
+            .payload(payload.as_slice())
             .headers(headers);
 
         in_flight.push(producer.send(record, Duration::from_secs(30)));
