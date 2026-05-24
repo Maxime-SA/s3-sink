@@ -17,9 +17,11 @@ impl TimerInterrupts {
         // commit accumulated offsets
         let commit_tick = interval(Duration::from_millis(config.timers.commit_tick_ms));
 
-        // upload dormant files
+        /*
+        upload dormant files, wait at most 10% more time than the timeout
+         */
         let upload_tick = interval(Duration::from_millis(
-            config.uploads.max_active_file_timeout_ms / 5,
+            config.uploads.max_active_file_timeout_ms / 10,
         ));
 
         TimerInterrupts {

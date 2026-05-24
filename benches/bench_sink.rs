@@ -6,7 +6,7 @@ use tracing::{error, info};
 
 const NUM_TOPICS: usize = 50;
 const BENCH_KAFKA_CONFIG: [(&str, &str); 12] = [
-    ("bootstrap.servers", "localhost:9092"),
+    ("bootstrap.servers", "100.109.226.99:9092"),
     ("group.id", "s3-sink-bench"),
     ("client.id", "s3-sink-bench"),
     ("auto.offset.reset", "earliest"),
@@ -100,7 +100,7 @@ fn main() {
     runtime.block_on(async {
         let uploader = S3Upload::new(
             Region::from_static("us-east-1"),
-            Some("http://localhost:9000"),
+            Some("http://100.109.226.99:9000"),
             "sink-output".into(),
             None,
             None,

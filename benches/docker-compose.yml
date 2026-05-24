@@ -23,20 +23,22 @@ services:
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
 
       # Sockets Kafka binds to INSIDE the container
-      # PLAINTEXT://0.0.0.0:9092 = broker traffic on all interfaces, port 9092
-      # CONTROLLER://0.0.0.0:9093 = internal controller traffic, port 9093
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      # PLAINTEXT://0.0.0.0:9092 = broker traffic from local clients (same machine)
+      # EXTERNAL://0.0.0.0:9094 = broker traffic from remote clients (e.g. macOS over Tailscale)
+      # CONTROLLER://0.0.0.0:9093 = internal controller traffic
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,EXTERNAL://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093
 
-      # What Kafka tells CLIENTS to connect to
-      # Clients outside the container resolve "localhost:9092" (via port mapping below)
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      # What Kafka tells CLIENTS to connect to after initial bootstrap
+      # Local clients connect via localhost:9092
+      # Remote clients connect via the server's IP on port 9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,EXTERNAL://100.109.226.99:9094
 
       # Which listener name is used for controller-to-controller communication
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
 
       # Maps listener names to security protocols
-      # Both use PLAINTEXT (no TLS, no auth) — fine for local benchmarking
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      # All use PLAINTEXT (no TLS, no auth) — fine for local benchmarking
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
 
       # Where Kafka stores partition data on disk (inside the container)
       KAFKA_LOG_DIRS: /var/lib/kafka/data
@@ -63,8 +65,10 @@ services:
 
     ports:
       # host_port:container_port
-      # Your sink connects to localhost:9092, Docker forwards to container's 9092
+      # Local clients connect to localhost:9092
       - "9092:9092"
+      # Remote clients connect to <server-ip>:9094
+      - "9094:9094"
 
     volumes:
       # Named volume — persists Kafka data across container restarts
