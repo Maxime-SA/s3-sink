@@ -26,13 +26,13 @@ impl RouterStrategy {
 
         let now = chrono::Utc::now();
         let date = now.format("%Y-%m-%d");
-        let timestamp = now.format("%Y%m%dT%H%M%SZ");
+        let timestamp = now.format("%Y-%m-%dT%H%M%SZ");
         let uuid = &uuid::Uuid::new_v4().to_string()[..8];
 
         match self {
             Self::TopicVersion => {
                 format!(
-                    "{schema}/{version}/ingest_year_month_day={date}/{timestamp}-{uuid}.zst",
+                    "{schema}/{version}/ingest_year_month_day={date}/{timestamp}-{uuid}.json.zst",
                     schema = parts[0],
                     version = parts[1],
                     date = date,
@@ -42,7 +42,7 @@ impl RouterStrategy {
             }
             Self::Dlq => {
                 format!(
-                    "{dlq_topic}/{schema}/{version}/error={status_code}/ingest_year_month_day={date}/{timestamp}-{uuid}.zst",
+                    "{dlq_topic}/{schema}/{version}/error={status_code}/ingest_year_month_day={date}/{timestamp}-{uuid}.json.zst",
                     dlq_topic = parts[0],
                     schema = parts[1],
                     version = parts[2],

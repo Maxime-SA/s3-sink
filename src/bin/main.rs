@@ -3,13 +3,16 @@ use std::rc::Rc;
 use s3_sink::*;
 use tracing::{error, info};
 
-const LOCAL_KAFKA_CONFIG: [(&str, &str); 15] = [
+// # EC2 instance metadata
+// AZ_ID=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone-id)
+const LOCAL_KAFKA_CONFIG: [(&str, &str); 16] = [
     (
         "bootstrap.servers",
         "b-1.dpkafkadev.ams1av.c6.kafka.eu-west-1.amazonaws.com:9098,b-2.dpkafkadev.ams1av.c6.kafka.eu-west-1.amazonaws.com:9098,b-3.dpkafkadev.ams1av.c6.kafka.eu-west-1.amazonaws.com:9098",
     ),
     ("group.id", "s3-sink-rust"),
     ("client.id", "s3-sink-rust"),
+    ("client.rack", ""),
     ("auto.offset.reset", "earliest"),
     ("enable.auto.offset.store", "false"),
     ("enable.auto.commit", "false"),

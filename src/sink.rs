@@ -20,7 +20,7 @@ use tracing::{error, info, warn};
 Todo:
 - Handle Kafka rebalance appropriately
 - Timer interrupts for signal such as SIGTERM
-- Backpressure for in-flight uploads, local files, offsets in 
+- Backpressure for in-flight uploads, local files, offsets in
 registry, ...
 - Fairness Scheduler
 - Separate recoverable from unrecoverable errors
