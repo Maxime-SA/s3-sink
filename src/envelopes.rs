@@ -23,13 +23,15 @@ pub struct ToUpload {
     object_key: String,
     file: SealedFile,
     offsets: SealedOffsets,
+    retries: u8,
 }
 impl ToUpload {
-    pub fn new(object_key: String, file: SealedFile, offsets: SealedOffsets) -> Self {
+    pub fn new(object_key: String, file: SealedFile, offsets: SealedOffsets, retries: u8) -> Self {
         ToUpload {
             object_key,
             file,
             offsets,
+            retries,
         }
     }
 
@@ -55,6 +57,19 @@ impl ToUpload {
 
     pub fn compressed_size_b(&self) -> u64 {
         self.file.compressed_size_b()
+    }
+
+    pub fn retries(&self) -> u8 {
+        self.retries
+    }
+
+    pub fn decrement(self) -> Self {
+        ToUpload {
+            object_key: self.object_key,
+            file: self.file,
+            offsets: self.offsets,
+            retries: self.retries - 1,
+        }
     }
 }
 

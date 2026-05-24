@@ -81,14 +81,16 @@ impl Uploader for S3Upload {
                 let record_count = to_upload.record_count();
                 let raw_size_b = to_upload.raw_size_b();
                 let compressed_size_b = to_upload.compressed_size_b();
-                let compression_ratio =
-                    format!("{:.1}", (compressed_size_b as f64) / (raw_size_b as f64));
+                let compression_ratio = format!(
+                    "{:.1}%",
+                    (1.0 - compressed_size_b as f64 / raw_size_b as f64) * 100.0
+                );
 
                 tm.upload()
                     .bucket(&bucket)
                     .key(to_upload.object_key())
                     .body(input_stream)
-                    .server_side_encryption(aws_sdk_s3::types::ServerSideEncryption::Aes256)
+                    // .server_side_encryption(aws_sdk_s3::types::ServerSideEncryption::Aes256)
                     .metadata("record_count", record_count.to_string())
                     .metadata("raw_size_bytes", raw_size_b.to_string())
                     .metadata("compression_ratio", compression_ratio)

@@ -26,7 +26,7 @@ impl RouterStrategy {
 
         let now = chrono::Utc::now();
         let date = now.format("%Y-%m-%d");
-        let timestamp = now.format("%Y-%m-%dT%H%M%SZ");
+        let timestamp = now.format("%Y-%m-%dT%H:%M:%SZ");
         let uuid = &uuid::Uuid::new_v4().to_string()[..8];
 
         match self {

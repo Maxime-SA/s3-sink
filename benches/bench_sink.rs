@@ -62,6 +62,7 @@ fn get_bench_config() -> SinkConfig {
     };
 
     let upload_config = UploadConfig {
+        max_retry: 3,
         max_concurrent_uploads: 50,
         max_active_file_timeout_ms: 1000 * 60 * 1,
     };
@@ -98,7 +99,7 @@ fn main() {
 
     runtime.block_on(async {
         let uploader = S3Upload::new(
-            Region::from_static("eu-west-1"),
+            Region::from_static("us-east-1"),
             Some("http://localhost:9000"),
             "sink-output".into(),
             None,

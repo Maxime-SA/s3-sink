@@ -5,9 +5,10 @@ use rdkafka::{
     ClientConfig, ClientContext,
     client::OAuthToken,
     config::FromClientConfigAndContext,
-    consumer::{Consumer, ConsumerContext, StreamConsumer},
+    consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance, StreamConsumer},
 };
 use std::borrow::Borrow;
+use tokio::sync::{mpsc::UnboundedSender, oneshot};
 use tracing::info;
 
 /*
@@ -19,17 +20,37 @@ Todo:
     - ...
 */
 
+pub struct PartitionRevocation {
+    pub partitions: Vec<(String, i32)>, // (topic, partition) to flush
+    pub done: oneshot::Sender<()>,      // signal back when flush is complete
+}
+impl PartitionRevocation {
+    fn new(done: oneshot::Sender<()>) -> Self {
+        Self {
+            partitions: Vec::new(),
+            done,
+        }
+    }
+}
+
 pub struct CustomContext {
     region: Region,
     lifetime_ms: i64,
     principal_name: String,
+    revocation_tx: UnboundedSender<PartitionRevocation>,
 }
 impl CustomContext {
-    pub fn new(region: Region, lifetime_ms: i64, principal_name: String) -> Self {
+    pub fn new(
+        region: Region,
+        lifetime_ms: i64,
+        principal_name: String,
+        revocation_tx: UnboundedSender<PartitionRevocation>,
+    ) -> Self {
         CustomContext {
             region,
             lifetime_ms,
             principal_name,
+            revocation_tx,
         }
     }
 
@@ -68,17 +89,36 @@ impl ClientContext for CustomContext {
 }
 
 impl ConsumerContext for CustomContext {
-    fn pre_rebalance(
-        &self,
-        base_consumer: &rdkafka::consumer::BaseConsumer<Self>,
-        rebalance: &rdkafka::consumer::Rebalance<'_>,
-    ) {
-        info!("pre-rebalance");
-        ()
+    fn pre_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
+        if let Rebalance::Revoke(tpl) = rebalance {
+            info!("handling Rebalance::Revoke");
+            let (done_tx, done_rx) = oneshot::channel();
+
+            let request = tpl.elements().iter().fold(
+                PartitionRevocation::new(done_tx),
+                |mut request, element| {
+                    request
+                        .partitions
+                        .push((element.topic().into(), element.partition()));
+                    request
+                },
+            );
+
+            // send request to event loop
+            if self.revocation_tx.send(request).is_err() {
+                return;
+            }
+
+            // block until event loop is done with the request
+            let _ = done_rx.blocking_recv();
+        }
     }
 }
 
-pub fn init_kafka_consumer(config: &KafkaConfig) -> Result<StreamConsumer<CustomContext>> {
+pub fn init_kafka_consumer(
+    config: &KafkaConfig,
+    revocation_tx: UnboundedSender<PartitionRevocation>,
+) -> Result<StreamConsumer<CustomContext>> {
     let mut client_config = ClientConfig::new();
 
     for (key, value) in &config.consumer_properties {
@@ -89,6 +129,7 @@ pub fn init_kafka_consumer(config: &KafkaConfig) -> Result<StreamConsumer<Custom
         config.region.clone(),
         config.token_lifetime_ms,
         config.principal_name.clone(),
+        revocation_tx,
     );
 
     let consumer: StreamConsumer<CustomContext> =

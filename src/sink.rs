@@ -1,8 +1,9 @@
 use crate::cache::{Cache, StreamId};
 use crate::envelopes::{ToUpload, UploadResult};
+use crate::error::SinkError;
 use crate::files::FileRegistry;
 use crate::json_serializer::JsonSerializer;
-use crate::kafka_consumer::{CustomContext, init_kafka_consumer};
+use crate::kafka_consumer::{CustomContext, PartitionRevocation, init_kafka_consumer};
 use crate::offset_registry::OffsetRegistry;
 use crate::stats::Stats;
 use crate::timer_interrupts::TimerInterrupts;
@@ -15,16 +16,16 @@ use std::fs;
 use std::time::{Duration, Instant};
 use tokio::select;
 use tokio::signal::unix::SignalKind;
+use tokio::sync::mpsc::unbounded_channel;
 use tracing::{error, info, warn};
 
 /*
 Todo:
 - Handle Kafka rebalance appropriately
-- Timer interrupts for signal such as SIGTERM
+- Separate recoverable from unrecoverable errors
 - Backpressure for in-flight uploads, local files, offsets in
 registry, ...
 - Fairness Scheduler
-- Separate recoverable from unrecoverable errors
 */
 
 type S3UploadPool = FuturesUnordered<BoxFuture>;
@@ -77,9 +78,16 @@ impl<'a> Sink<'a> {
         let mut serializer: JsonSerializer = JsonSerializer::new();
 
         info!("initializing StreamConsumer");
-        let consumer = init_kafka_consumer(&self.config.kafka)?;
+        /*
+        Channel used for communication between Kafka Consumer and Tokio runtime.
+        Kafka Consumer runs on its own OS threads, not within the Tokio runtime.
+        We can register callbacks on the Kafka Consumer (i.e. pre-rebalance) and use this channel to communicate with the event loop.
+         */
+        let (revocation_tx, mut revocation_rx) = unbounded_channel();
 
-        info!("initializing ShutdownSignal");
+        let consumer = init_kafka_consumer(&self.config.kafka, revocation_tx)?;
+
+        info!("initializing ShutdownHandler");
         let mut shutdown = std::pin::pin!(Self::shutdown_signal());
 
         loop {
@@ -93,32 +101,34 @@ impl<'a> Sink<'a> {
                 biased;
 
                 // 1. shutdown signal
-                _ = &mut shutdown => {
-                    info!("shutdown signal received");
-                    break;
+                _ = &mut shutdown => break,
+
+                // 2. handle partition revocation requests, happens during rebalances
+                Some(request) = revocation_rx.recv() => {
+                    self.process_partition_revocation(request, &consumer, &uploader).await?;
                 }
 
-                // 2. an upload to S3 has completed
+                // 3. an upload to S3 has completed
                 Some(result) = self.upload_pool.next() => {
                     self.process_upload_result(result, &uploader)?;
                 }
 
-                // 3. timer interrupt to commit offsets
+                // 4. timer interrupt to commit offsets
                 _ = self.timer_interrupts.commit_tick.tick() => {
                     self.process_commit_tick(&consumer)?;
                 }
 
-                // 4. timer interrupt to upload any dormant files
+                // 5. timer interrupt to upload any dormant files
                 _ = self.timer_interrupts.upload_tick.tick() => {
                     self.process_upload_tick(&uploader)?;
                 }
 
-                // 5. timer interrupt to review topic ingestion budget
+                // 6. timer interrupt to review topic ingestion budget
                 // _ = self.timer_interrupts.fairness_scheduler_tick.tick() => {
                 //     self.process_fairness_scheduler_tick(&consumer)?;
                 // }
 
-                // 6. process Kafka record
+                // 7. process Kafka record
                 maybe_next_record = consumer.recv() => {
                     self.process_record(&maybe_next_record?, &mut serializer, &uploader)?;
                 }
@@ -145,6 +155,8 @@ impl<'a> Sink<'a> {
         consumer: &StreamConsumer<CustomContext>,
         uploader: &U,
     ) -> Result<()> {
+        info!("shutdown signal received, draining and committing");
+
         while let Some(result) = self.upload_pool.next().await {
             self.process_upload_result(result, uploader)?;
         }
@@ -153,6 +165,31 @@ impl<'a> Sink<'a> {
         if offsets.count() > 0 {
             consumer.commit(&offsets, CommitMode::Sync)?;
         }
+
+        Ok(())
+    }
+
+    async fn process_partition_revocation<U: Uploader>(
+        &mut self,
+        request: PartitionRevocation,
+        consumer: &StreamConsumer<CustomContext>,
+        uploader: &U,
+    ) -> Result<()> {
+        info!("partition revocation signal received, flushing and committing");
+        for (topic_name, partition) in request.partitions {
+            let Some(ids_to_flush) = self.cache.get_partition_revocation(&topic_name, partition)
+            else {
+                continue;
+            };
+
+            for id in ids_to_flush {
+                self.seal_and_upload(&id, uploader)?;
+            }
+        }
+
+        self.drain_and_commit_sync(consumer, uploader).await?;
+
+        let _ = request.done.send(());
 
         Ok(())
     }
@@ -180,12 +217,12 @@ impl<'a> Sink<'a> {
         Ok(())
     }
 
-    fn process_fairness_scheduler_tick(
-        &mut self,
-        consumer: &StreamConsumer<CustomContext>,
-    ) -> Result<()> {
-        todo!()
-    }
+    // fn process_fairness_scheduler_tick(
+    //     &mut self,
+    //     _: &StreamConsumer<CustomContext>,
+    // ) -> Result<()> {
+    //     todo!()
+    // }
 
     fn process_upload_result<U: Uploader>(
         &mut self,
@@ -196,8 +233,17 @@ impl<'a> Sink<'a> {
             // can we add backoff here or a max retry?
             UploadResult::Failure(to_upload, sink_error) => {
                 error!("UploadResult::Failure: {:?}", sink_error);
+
                 self.stats.inc_failure_uploads();
-                self.upload_pool.push(uploader.upload(to_upload));
+
+                if to_upload.retries() == 0 {
+                    return Err(SinkError::S3Upload(
+                        "maximum number of retries reached for S3 upload".into(),
+                    ));
+                }
+
+                self.upload_pool
+                    .push(uploader.upload(to_upload.decrement()));
             }
             UploadResult::Success(file_to_gc, offsets) => {
                 self.stats.inc_success_uploads();
@@ -264,6 +310,7 @@ impl<'a> Sink<'a> {
             router.partition_spec(id),
             sealed_file,
             sealed_offsets,
+            self.config.uploads.max_retry,
         )));
 
         Ok(())

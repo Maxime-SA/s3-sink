@@ -46,7 +46,8 @@ pub struct Cache {
     buf: String,
     topics: HashMap<TopicName, TopicConfig>,
     ids: HashSet<StreamId>, // memoization of StreamIds to prevent allocation on every record
-    routers: HashMap<StreamId, RouterStrategy>, // for convenience when processing dormant files
+    routers: HashMap<StreamId, RouterStrategy>, // for convenience when handling dormant files
+    partition_revocation: HashMap<TopicName, HashMap<i32, HashSet<StreamId>>>, // for convenience when handling partition revocation requests (i.e consumer group rebalance)
 }
 
 impl Cache {
@@ -64,6 +65,7 @@ impl Cache {
             topics: topic_cache,
             ids: HashSet::new(),
             routers: HashMap::new(),
+            partition_revocation: HashMap::new(),
         }
     }
 
@@ -82,9 +84,18 @@ impl Cache {
 
         let topic_name = topic_name_ptr.clone();
 
+        let stream_id = self.get_stream_id(record, &config.router);
+
+        self.partition_revocation
+            .entry(topic_name.clone())
+            .or_default()
+            .entry(record.partition())
+            .or_default()
+            .insert(stream_id.clone());
+
         Ok(RecordMetadata {
             topic_name,
-            stream_id: self.get_stream_id(record, &config.router),
+            stream_id,
             config,
         })
     }
@@ -106,5 +117,15 @@ impl Cache {
         self.routers.get(id).ok_or_else(|| {
             SinkError::Configuration(format!("missing topic configuration for '{id}'"))
         })
+    }
+
+    pub fn get_partition_revocation(
+        &mut self,
+        topic_name: &str,
+        partition: i32,
+    ) -> Option<HashSet<StreamId>> {
+        self.partition_revocation
+            .get_mut(topic_name)
+            .and_then(|partitions| partitions.remove(&partition))
     }
 }

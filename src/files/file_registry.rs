@@ -64,13 +64,6 @@ impl FileRegistry {
             .ok_or_else(|| self.file_not_found("file_size", id))
     }
 
-    pub fn compressed_file_size_b(&self, id: &StreamId) -> Result<u64> {
-        self.files
-            .get(id)
-            .map(|val| val.0.compressed_size_b())
-            .ok_or_else(|| self.file_not_found("file_size", id))
-    }
-
     pub fn active_file_count(&self) -> u64 {
         self.files.len() as u64
     }
