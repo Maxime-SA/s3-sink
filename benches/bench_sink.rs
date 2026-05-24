@@ -6,7 +6,7 @@ use tracing::{error, info};
 
 const NUM_TOPICS: usize = 50;
 const BENCH_KAFKA_CONFIG: [(&str, &str); 12] = [
-    ("bootstrap.servers", "100.109.226.99:9092"),
+    ("bootstrap.servers", "100.109.226.99:9094"),
     ("group.id", "s3-sink-bench"),
     ("client.id", "s3-sink-bench"),
     ("auto.offset.reset", "earliest"),
