@@ -20,8 +20,10 @@ use tracing::{error, info, warn};
 Todo:
 - Handle Kafka rebalance appropriately
 - Timer interrupts for signal such as SIGTERM
-- Backpressure for in-flight uploads, local files, offsets in registry, ...
+- Backpressure for in-flight uploads, local files, offsets in 
+registry, ...
 - Fairness Scheduler
+- Separate recoverable from unrecoverable errors
 */
 
 type S3UploadPool = FuturesUnordered<BoxFuture>;
@@ -83,6 +85,8 @@ impl<'a> Sink<'a> {
                 default behaviour: randomly poll the async expressions one after the other
                 'biased' behaviour: polls the async expressions sequentially
                  */
+                biased;
+
                 // 1. an upload to S3 has completed
                 Some(result) = self.upload_pool.next() => {
                     self.process_upload_result(result, &uploader)?;
@@ -167,17 +171,16 @@ impl<'a> Sink<'a> {
     Purpose is to limit the amount of memory used for uploads.
      */
     fn ready_to_upload(&mut self, raw_size_b: u64) -> bool {
-        let backpressure_control =
-            (self.upload_pool.len() as u64) < self.config.uploads.max_concurrent_uploads;
+        let apply_backpressure =
+            (self.upload_pool.len() as u64) > self.config.uploads.max_concurrent_uploads;
 
-        let is_ready = raw_size_b >= self.config.files.target_file_size_b && backpressure_control;
-
-        if backpressure_control {
+        if apply_backpressure {
             self.stats.uploads_backpressure_count += 1;
             warn!("too many in-flight uploads, applying backpressure");
+            false
+        } else {
+            raw_size_b >= self.config.files.target_file_size_b
         }
-
-        is_ready
     }
 
     fn process_record<U: Uploader>(

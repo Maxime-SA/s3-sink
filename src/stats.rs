@@ -9,7 +9,6 @@ pub struct Stats {
     pub failed_uploads: u64,
     pub uploads_backpressure_count: u64,
     pub started_at: Instant,
-    last_report: Instant,
 }
 
 impl Stats {
@@ -25,12 +24,11 @@ impl Stats {
             failed_uploads: 0,
             uploads_backpressure_count: 0,
             started_at: now,
-            last_report: now,
         }
     }
 
     pub fn print_report(&mut self, active_file_count: u64, in_flight_uploads: u64) {
-        let elapsed = self.last_report.elapsed().as_secs_f64();
+        let elapsed = self.started_at.elapsed().as_secs_f64();
 
         let mb_consumed = self.bytes_consumed / Self::ONE_MB;
 

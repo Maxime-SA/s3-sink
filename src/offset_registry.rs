@@ -22,6 +22,7 @@ Todo:
 pub struct OffsetRegistry {
     consumed: HashMap<StreamId, OffsetsVec>,
     uploaded: OffsetsTree,
+    watermark: HashMap<(TopicName, i32), i64>, // offset at which we can safely say that all lower offsets have been committed
 }
 
 impl OffsetRegistry {
@@ -29,6 +30,7 @@ impl OffsetRegistry {
         OffsetRegistry {
             consumed: HashMap::new(),
             uploaded: OffsetsTree::new(),
+            watermark: HashMap::new(),
         }
     }
 
@@ -39,6 +41,10 @@ impl OffsetRegistry {
         partition: i32,
         offset: i64,
     ) {
+        self.watermark
+            .entry((topic_name.clone(), partition))
+            .or_insert(offset);
+
         let consumed_offsets = self.get_mut_stream_offsets_or_create(id);
         consumed_offsets
             .entry((topic_name, partition))
@@ -78,8 +84,9 @@ impl OffsetRegistry {
         let mut keys_for_gc = vec![];
 
         for ((topic, partition), offsets) in &mut self.uploaded {
-            let Some(&first) = offsets.iter().next() else {
-                keys_for_gc.push((topic.clone(), *partition));
+            let key = (topic.clone(), *partition);
+
+            let Some(&watermark) = self.watermark.get(&key) else {
                 continue;
             };
 
@@ -87,8 +94,8 @@ impl OffsetRegistry {
             Find the first contiguous offset which is not present in the offsets that we have uploaded.
             This is the offset at which a consumer should restart on crash.
              */
-            let mut offset_to_commit = first;
-            for &offset in offsets.iter() {
+            let mut offset_to_commit = watermark;
+            for &offset in offsets.range(watermark..) {
                 if offset == offset_to_commit {
                     offset_to_commit += 1;
                 } else {
@@ -96,15 +103,19 @@ impl OffsetRegistry {
                 }
             }
 
-            result.add_partition_offset(
-                topic.borrow(),
-                *partition,
-                rdkafka::Offset::Offset(offset_to_commit),
-            )?;
+            if offset_to_commit > watermark {
+                result.add_partition_offset(
+                    topic.borrow(),
+                    *partition,
+                    rdkafka::Offset::Offset(offset_to_commit),
+                )?;
 
-            // garbage collect any redundant offsets
-            let new = offsets.split_off(&offset_to_commit);
-            *offsets = new;
+                self.watermark.insert(key, offset_to_commit);
+
+                // garbage collect any redundant offsets
+                let new = offsets.split_off(&offset_to_commit);
+                *offsets = new;
+            }
 
             // track redundant topic partition keys
             if offsets.is_empty() {

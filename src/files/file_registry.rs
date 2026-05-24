@@ -43,8 +43,8 @@ impl FileRegistry {
 
     pub fn files_older_than(&mut self, cut_off: Instant) -> Vec<StreamId> {
         let mut result = Vec::new();
-        for (id, file) in &self.files {
-            if file.0.created_at() < cut_off {
+        for (id, (file, _)) in &self.files {
+            if file.created_at() < cut_off {
                 result.push(id.clone());
             }
         }
