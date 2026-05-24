@@ -1,14 +1,23 @@
 use std::time::Instant;
 use tracing::info;
 
+pub struct Counter(u64, u64); // (aggregate count, window count)
+impl Counter {
+    fn inc(&mut self, len: u64) {
+        self.0 += len;
+        self.1 += len;
+    }
+}
+
 pub struct Stats {
-    pub record_count: u64,
-    pub bytes_consumed: u64,
-    pub files_sealed: u64,
-    pub successful_uploads: u64,
-    pub failed_uploads: u64,
-    pub uploads_backpressure_count: u64,
-    pub started_at: Instant,
+    pub record_count: Counter,
+    pub bytes_consumed: Counter,
+    pub files_sealed: Counter,
+    pub success_uploads: Counter,
+    pub failure_uploads: Counter,
+    pub upload_backpressure: Counter,
+    started_at: Instant,
+    last_tick: Instant,
 }
 
 impl Stats {
@@ -16,42 +25,134 @@ impl Stats {
 
     pub fn new() -> Self {
         let now = Instant::now();
+
         Stats {
-            record_count: 0,
-            bytes_consumed: 0,
-            files_sealed: 0,
-            successful_uploads: 0,
-            failed_uploads: 0,
-            uploads_backpressure_count: 0,
+            record_count: Counter(0, 0),
+            bytes_consumed: Counter(0, 0),
+            files_sealed: Counter(0, 0),
+            success_uploads: Counter(0, 0),
+            failure_uploads: Counter(0, 0),
+            upload_backpressure: Counter(0, 0),
             started_at: now,
+            last_tick: now,
         }
     }
 
     pub fn print_report(&mut self, active_file_count: u64, in_flight_uploads: u64) {
-        let elapsed = self.started_at.elapsed().as_secs_f64();
-
-        let mb_consumed = self.bytes_consumed / Self::ONE_MB;
-
-        let mb_per_sec = format_args!(
-            "{:.1}",
-            self.bytes_consumed as f64 / elapsed / (Self::ONE_MB as f64)
-        );
-
-        let records_per_sec = (self.record_count as f64 / elapsed) as u64;
-
         info!(
-            record_count = self.record_count,
-            mb_consumed = mb_consumed,
-            records_per_sec = records_per_sec,
-            mb_per_sec = mb_per_sec,
-            files_sealed = self.files_sealed,
-            successful_uploads = self.successful_uploads,
-            failed_uploads = self.failed_uploads,
-            uploads_backpressure = self.uploads_backpressure_count,
             active_files = active_file_count,
             in_flight_uploads = in_flight_uploads,
-            elapsed_s = self.started_at.elapsed().as_secs(),
-            "stats"
+            "snapshot stats"
         );
+
+        // aggregate calculations
+        let since_started = self.started_at.elapsed().as_secs_f64();
+
+        let agg_records_per_sec = self.rate(self.record_count.0, since_started);
+
+        let agg_mb_consumed = (self.bytes_consumed.0 as f64) / (Self::ONE_MB as f64);
+
+        let agg_mb_per_sec = format!("{:.1}", agg_mb_consumed / since_started);
+
+        let agg_files_sealed_per_sec = self.rate(self.files_sealed.0, since_started);
+
+        let agg_successful_uploads_per_sec = self.rate(self.success_uploads.0, since_started);
+
+        let agg_failed_uploads_per_sec = self.rate(self.failure_uploads.0, since_started);
+
+        let agg_uploads_backpressure_per_sec = self.rate(self.upload_backpressure.0, since_started);
+
+        info!(
+            record_count = self.record_count.0,
+            record_per_sec = agg_records_per_sec,
+            mb_consumed = agg_mb_consumed,
+            mb_per_sec = agg_mb_per_sec,
+            files_sealed = self.files_sealed.0,
+            files_sealed_per_sec = agg_files_sealed_per_sec,
+            successful_uploads = self.success_uploads.0,
+            successful_uploads_per_sec = agg_successful_uploads_per_sec,
+            failed_uploads = self.failure_uploads.0,
+            failed_uploads_per_sec = agg_failed_uploads_per_sec,
+            uploads_backpressure = self.upload_backpressure.0,
+            uploads_backpressure_per_sec = agg_uploads_backpressure_per_sec,
+            since_started_sec = since_started,
+            "aggregate stats"
+        );
+
+        // window calculations
+        let since_last_tick = self.last_tick.elapsed().as_secs_f64();
+
+        let window_records_per_sec = self.rate(self.record_count.1, since_last_tick);
+
+        let window_mb_consumed = (self.bytes_consumed.1 as f64) / (Self::ONE_MB as f64);
+
+        let window_mb_per_sec = format!("{:.1}", window_mb_consumed / since_started);
+
+        let window_files_sealed_per_sec = self.rate(self.files_sealed.1, since_last_tick);
+
+        let window_successful_uploads_per_sec = self.rate(self.success_uploads.1, since_last_tick);
+
+        let window_failed_uploads_per_sec = self.rate(self.failure_uploads.1, since_last_tick);
+
+        let window_uploads_backpressure_per_sec =
+            self.rate(self.upload_backpressure.1, since_last_tick);
+
+        info!(
+            record_count = self.record_count.1,
+            record_per_sec = window_records_per_sec,
+            mb_consumed = window_mb_consumed,
+            mb_per_sec = window_mb_per_sec,
+            files_sealed = self.files_sealed.1,
+            files_sealed_per_sec = window_files_sealed_per_sec,
+            successful_uploads = self.success_uploads.1,
+            successful_uploads_per_sec = window_successful_uploads_per_sec,
+            failed_uploads = self.failure_uploads.1,
+            failed_uploads_per_sec = window_failed_uploads_per_sec,
+            uploads_backpressure = self.upload_backpressure.1,
+            uploads_backpressure_per_sec = window_uploads_backpressure_per_sec,
+            window_duration_sec = since_last_tick,
+            "window stats"
+        );
+
+        self.reset_window();
+    }
+
+    pub fn inc_bytes_consumed(&mut self, len: u64) {
+        self.bytes_consumed.inc(len);
+        self.record_count.inc(1);
+    }
+
+    pub fn inc_success_uploads(&mut self) {
+        self.success_uploads.inc(1);
+    }
+
+    pub fn inc_failure_uploads(&mut self) {
+        self.failure_uploads.inc(1);
+    }
+
+    pub fn inc_files_sealed(&mut self) {
+        self.files_sealed.inc(1);
+    }
+
+    pub fn inc_upload_backpressure(&mut self) {
+        self.upload_backpressure.inc(1);
+    }
+
+    fn rate(&self, counter: u64, time_s: f64) -> String {
+        if time_s > 0.0 {
+            format!("{:.1}", counter as f64 / time_s)
+        } else {
+            String::from("0.0")
+        }
+    }
+
+    fn reset_window(&mut self) {
+        self.record_count.1 = 0;
+        self.bytes_consumed.1 = 0;
+        self.files_sealed.1 = 0;
+        self.success_uploads.1 = 0;
+        self.failure_uploads.1 = 0;
+        self.upload_backpressure.1 = 0;
+        self.last_tick = Instant::now();
     }
 }
