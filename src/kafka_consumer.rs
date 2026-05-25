@@ -7,8 +7,11 @@ use rdkafka::{
     config::FromClientConfigAndContext,
     consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance, StreamConsumer},
 };
-use std::borrow::Borrow;
-use tokio::sync::{mpsc::UnboundedSender, oneshot};
+use std::{
+    borrow::Borrow,
+    sync::mpsc::{SyncSender, sync_channel},
+};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::info;
 
 /*
@@ -22,10 +25,10 @@ Todo:
 
 pub struct PartitionRevocation {
     pub partitions: Vec<(String, i32)>, // (topic, partition) to flush
-    pub done: oneshot::Sender<()>,      // signal back when flush is complete
+    pub done: SyncSender<()>,           // signal back when flush is complete
 }
 impl PartitionRevocation {
-    fn new(done: oneshot::Sender<()>) -> Self {
+    fn new(done: SyncSender<()>) -> Self {
         Self {
             partitions: Vec::new(),
             done,
@@ -92,7 +95,7 @@ impl ConsumerContext for CustomContext {
     fn pre_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
         if let Rebalance::Revoke(tpl) = rebalance {
             info!("handling Rebalance::Revoke");
-            let (done_tx, done_rx) = oneshot::channel();
+            let (done_tx, done_rx) = sync_channel(0);
 
             let request = tpl.elements().iter().fold(
                 PartitionRevocation::new(done_tx),
@@ -110,7 +113,7 @@ impl ConsumerContext for CustomContext {
             }
 
             // block until event loop is done with the request
-            let _ = done_rx.blocking_recv();
+            let _ = done_rx.recv();
         }
     }
 }

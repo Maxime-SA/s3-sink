@@ -176,6 +176,7 @@ impl<'a> Sink<'a> {
         uploader: &U,
     ) -> Result<()> {
         info!("partition revocation signal received, flushing and committing");
+        
         for (topic_name, partition) in request.partitions {
             let Some(ids_to_flush) = self.cache.get_partition_revocation(&topic_name, partition)
             else {
