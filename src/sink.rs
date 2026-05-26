@@ -3,7 +3,7 @@ use crate::envelopes::{ToUpload, UploadResult};
 use crate::error::SinkError;
 use crate::files::FileRegistry;
 use crate::json_serializer::JsonSerializer;
-use crate::kafka_consumer::{CustomContext, PartitionRevocation, init_kafka_consumer};
+use crate::kafka_consumer::{CustomContext, init_kafka_consumer};
 use crate::offset_registry::OffsetRegistry;
 use crate::stats::Stats;
 use crate::timer_interrupts::TimerInterrupts;
@@ -16,7 +16,6 @@ use std::fs;
 use std::time::{Duration, Instant};
 use tokio::select;
 use tokio::signal::unix::SignalKind;
-use tokio::sync::mpsc::unbounded_channel;
 use tracing::{error, info, warn};
 
 /*
@@ -78,14 +77,7 @@ impl<'a> Sink<'a> {
         let mut serializer: JsonSerializer = JsonSerializer::new();
 
         info!("initializing StreamConsumer");
-        /*
-        Channel used for communication between Kafka Consumer and Tokio runtime.
-        Kafka Consumer runs on its own OS threads, not within the Tokio runtime.
-        We can register callbacks on the Kafka Consumer (i.e. pre-rebalance) and use this channel to communicate with the event loop.
-         */
-        let (revocation_tx, mut revocation_rx) = unbounded_channel();
-
-        let consumer = init_kafka_consumer(&self.config.kafka, revocation_tx)?;
+        let consumer = init_kafka_consumer(&self.config.kafka)?;
 
         info!("initializing ShutdownHandler");
         let mut shutdown = std::pin::pin!(Self::shutdown_signal());
@@ -100,38 +92,33 @@ impl<'a> Sink<'a> {
                  */
                 biased;
 
-                // 1. shutdown signal
-                _ = &mut shutdown => break,
-
-                // 2. handle partition revocation requests, happens during rebalances
-                Some(request) = revocation_rx.recv() => {
-                    self.process_partition_revocation(request, &consumer, &uploader).await?;
-                }
-
-                // 3. an upload to S3 has completed
+                // 1. an upload to S3 has completed
                 Some(result) = self.upload_pool.next() => {
                     self.process_upload_result(result, &uploader)?;
                 }
 
-                // 4. timer interrupt to commit offsets
+                // 2. timer interrupt to commit offsets
                 _ = self.timer_interrupts.commit_tick.tick() => {
                     self.process_commit_tick(&consumer)?;
                 }
 
-                // 5. timer interrupt to upload any dormant files
+                // 3. timer interrupt to upload any dormant files
                 _ = self.timer_interrupts.upload_tick.tick() => {
                     self.process_upload_tick(&uploader)?;
                 }
 
-                // 6. timer interrupt to review topic ingestion budget
+                // 3. timer interrupt to review topic ingestion budget
                 // _ = self.timer_interrupts.fairness_scheduler_tick.tick() => {
                 //     self.process_fairness_scheduler_tick(&consumer)?;
                 // }
 
-                // 7. process Kafka record
+                // 5. process Kafka record
                 maybe_next_record = consumer.recv() => {
                     self.process_record(&maybe_next_record?, &mut serializer, &uploader)?;
                 }
+
+                // 6. shutdown signal
+                _ = &mut shutdown => break,
             }
         }
 
@@ -165,32 +152,6 @@ impl<'a> Sink<'a> {
         if offsets.count() > 0 {
             consumer.commit(&offsets, CommitMode::Sync)?;
         }
-
-        Ok(())
-    }
-
-    async fn process_partition_revocation<U: Uploader>(
-        &mut self,
-        request: PartitionRevocation,
-        consumer: &StreamConsumer<CustomContext>,
-        uploader: &U,
-    ) -> Result<()> {
-        info!("partition revocation signal received, flushing and committing");
-        
-        for (topic_name, partition) in request.partitions {
-            let Some(ids_to_flush) = self.cache.get_partition_revocation(&topic_name, partition)
-            else {
-                continue;
-            };
-
-            for id in ids_to_flush {
-                self.seal_and_upload(&id, uploader)?;
-            }
-        }
-
-        self.drain_and_commit_sync(consumer, uploader).await?;
-
-        let _ = request.done.send(());
 
         Ok(())
     }

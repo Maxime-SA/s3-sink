@@ -5,23 +5,25 @@ use tracing::{error, info};
 
 // # EC2 instance metadata
 // AZ_ID=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone-id)
-const LOCAL_KAFKA_CONFIG: [(&str, &str); 16] = [
+const LOCAL_KAFKA_CONFIG: [(&str, &str); 18] = [
     (
         "bootstrap.servers",
         "b-1.dpkafkadev.ams1av.c6.kafka.eu-west-1.amazonaws.com:9098,b-2.dpkafkadev.ams1av.c6.kafka.eu-west-1.amazonaws.com:9098,b-3.dpkafkadev.ams1av.c6.kafka.eu-west-1.amazonaws.com:9098",
     ),
+    ("group.protocol", "consumer"),
     ("group.id", "s3-sink-rust"),
     ("client.id", "s3-sink-rust"),
+    ("auto.create.topics.enable", "true"),
     ("client.rack", ""),
     ("auto.offset.reset", "earliest"),
     ("enable.auto.offset.store", "false"),
     ("enable.auto.commit", "false"),
-    ("fetch.max.bytes", "134217728"),           // 128MB
-    ("max.partition.fetch.bytes", "36700160"),  // 35MB
-    ("receive.message.max.bytes", "157286400"), // 150MB
-    ("group.protocol", "classic"),
-    ("partition.assignment.strategy", "cooperative-sticky"),
-    ("statistics.interval.ms", "30000"), // need to register a callback on rd_kafka_conf_set_stats_cb(),
+    ("fetch.max.bytes", "134217728"),
+    ("max.partition.fetch.bytes", "36700160"),
+    ("receive.message.max.bytes", "157286400"),
+    ("queued.min.messages", "100000"),
+    ("queued.max.messages.kbytes", "65536"),
+    ("statistics.interval.ms", "30000"),
     ("socket.keepalive.enable", "true"),
     ("security.protocol", "SASL_SSL"),
     ("sasl.mechanism", "OAUTHBEARER"),

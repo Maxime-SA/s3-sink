@@ -7,53 +7,25 @@ use rdkafka::{
     config::FromClientConfigAndContext,
     consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance, StreamConsumer},
 };
-use std::{
-    borrow::Borrow,
-    sync::mpsc::{SyncSender, sync_channel},
-};
-use tokio::sync::mpsc::UnboundedSender;
+use std::borrow::Borrow;
 use tracing::info;
 
 /*
 Todo:
 - Review unit tests
-- Figure out what to do with partitions that will be revoked.
-    - Do we need to flush and upload?
-    - Simply discard work done so far and commit offsets?
-    - ...
 */
-
-pub struct PartitionRevocation {
-    pub partitions: Vec<(String, i32)>, // (topic, partition) to flush
-    pub done: SyncSender<()>,           // signal back when flush is complete
-}
-impl PartitionRevocation {
-    fn new(done: SyncSender<()>) -> Self {
-        Self {
-            partitions: Vec::new(),
-            done,
-        }
-    }
-}
 
 pub struct CustomContext {
     region: Region,
     lifetime_ms: i64,
     principal_name: String,
-    revocation_tx: UnboundedSender<PartitionRevocation>,
 }
 impl CustomContext {
-    pub fn new(
-        region: Region,
-        lifetime_ms: i64,
-        principal_name: String,
-        revocation_tx: UnboundedSender<PartitionRevocation>,
-    ) -> Self {
+    pub fn new(region: Region, lifetime_ms: i64, principal_name: String) -> Self {
         CustomContext {
             region,
             lifetime_ms,
             principal_name,
-            revocation_tx,
         }
     }
 
@@ -93,35 +65,45 @@ impl ClientContext for CustomContext {
 
 impl ConsumerContext for CustomContext {
     fn pre_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
-        if let Rebalance::Revoke(tpl) = rebalance {
-            info!("handling Rebalance::Revoke");
-            let (done_tx, done_rx) = sync_channel(0);
+        match rebalance {
+            Rebalance::Assign(tpl) => info!("pre_rebalance: assigning {tpl:?}"),
+            Rebalance::Revoke(tpl) => info!("pre_rebalance: revoking {tpl:?}"),
+            Rebalance::Error(kafka_error) => info!(
+                "pre_rebalance: error {:?}",
+                kafka_error.rdkafka_error_code()
+            ),
+        }
+    }
 
-            let request = tpl.elements().iter().fold(
-                PartitionRevocation::new(done_tx),
-                |mut request, element| {
-                    request
-                        .partitions
-                        .push((element.topic().into(), element.partition()));
-                    request
-                },
-            );
-
-            // send request to event loop
-            if self.revocation_tx.send(request).is_err() {
-                return;
+    fn commit_callback(
+        &self,
+        result: rdkafka::error::KafkaResult<()>,
+        offsets: &rdkafka::TopicPartitionList,
+    ) {
+        match result {
+            Ok(_) => info!("commit_callback: successfully committed {offsets:?}"),
+            Err(kafka_error) => {
+                info!(
+                    "commit_callback: error during commit phase {:?}",
+                    kafka_error.rdkafka_error_code()
+                );
             }
+        }
+    }
 
-            // block until event loop is done with the request
-            let _ = done_rx.recv();
+    fn post_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
+        match rebalance {
+            Rebalance::Assign(tpl) => info!("post_rebalance: assigned {tpl:?}"),
+            Rebalance::Revoke(tpl) => info!("post_rebalance: revoked {tpl:?}"),
+            Rebalance::Error(kafka_error) => info!(
+                "post_rebalance: error {:?}",
+                kafka_error.rdkafka_error_code()
+            ),
         }
     }
 }
 
-pub fn init_kafka_consumer(
-    config: &KafkaConfig,
-    revocation_tx: UnboundedSender<PartitionRevocation>,
-) -> Result<StreamConsumer<CustomContext>> {
+pub fn init_kafka_consumer(config: &KafkaConfig) -> Result<StreamConsumer<CustomContext>> {
     let mut client_config = ClientConfig::new();
 
     for (key, value) in &config.consumer_properties {
@@ -132,7 +114,6 @@ pub fn init_kafka_consumer(
         config.region.clone(),
         config.token_lifetime_ms,
         config.principal_name.clone(),
-        revocation_tx,
     );
 
     let consumer: StreamConsumer<CustomContext> =
