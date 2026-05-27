@@ -5,9 +5,9 @@ use s3_sink::*;
 use tracing::{error, info};
 
 const NUM_TOPICS: usize = 50;
-const BENCH_KAFKA_CONFIG: [(&str, &str); 14] = [
+const BENCH_KAFKA_CONFIG: [(&str, &str); 13] = [
     ("bootstrap.servers", "localhost:9092"),
-    ("group.protocol", "consumer"),
+    ("group.protocol", "classic"),
     ("group.id", "s3-sink-bench"),
     ("client.id", "s3-sink-bench"),
     ("auto.offset.reset", "earliest"),
@@ -19,7 +19,6 @@ const BENCH_KAFKA_CONFIG: [(&str, &str); 14] = [
     ("queued.min.messages", "100000"),
     ("queued.max.messages.kbytes", "65536"),
     ("security.protocol", "PLAINTEXT"),
-    ("debug", "broker,security,topic,consumer"),
 ];
 
 fn get_bench_config() -> SinkConfig {

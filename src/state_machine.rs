@@ -1,12 +1,3 @@
-use rdkafka::{Message, TopicPartitionList, message::BorrowedMessage};
-use std::{
-    borrow::Borrow,
-    collections::{BTreeSet, HashMap},
-    path::PathBuf,
-    time::{Duration, Instant},
-};
-use tracing::error;
-
 use crate::{
     Result, SinkConfig,
     cache::Cache,
@@ -15,6 +6,14 @@ use crate::{
     error::SinkError,
     json_serializer::JsonSerializer,
 };
+use rdkafka::{Message, TopicPartitionList, message::BorrowedMessage};
+use std::{
+    borrow::Borrow,
+    collections::{BTreeSet, HashMap},
+    path::PathBuf,
+    time::{Duration, Instant},
+};
+use tracing::error;
 
 struct StreamState {
     bytes_consumed: u64,

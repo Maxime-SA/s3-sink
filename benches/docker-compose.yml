@@ -40,6 +40,9 @@ services:
       # All use PLAINTEXT (no TLS, no auth) — fine for local benchmarking
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
 
+      # Which listener brokers use for inter-broker communication
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
       # Where Kafka stores partition data on disk (inside the container)
       KAFKA_LOG_DIRS: /var/lib/kafka/data
 
