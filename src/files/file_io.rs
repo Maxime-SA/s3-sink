@@ -3,7 +3,6 @@ use std::{
     fs::File,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
-    time::Instant,
 };
 use uuid::Uuid;
 use zstd::Encoder;
@@ -36,8 +35,6 @@ impl<W: Write> Write for CountingWriter<W> {
 pub struct ActiveFile {
     path: PathBuf,
     writer: Encoder<'static, CountingWriter<BufWriter<File>>>,
-    raw_size_b: u64,
-    created_at: Instant,
 }
 
 impl ActiveFile {
@@ -45,7 +42,7 @@ impl ActiveFile {
 
     pub fn new(directory: &Path, compression_level: i32) -> Result<Self> {
         let mut path = directory.join(Uuid::new_v4().to_string());
-        path.set_extension("json.zst");
+        path.set_extension("jsonl.zst");
 
         let file = File::options().create(true).append(true).open(&path)?;
 
@@ -56,16 +53,10 @@ impl ActiveFile {
 
         let writer = Encoder::new(counting_writer, compression_level)?;
 
-        Ok(ActiveFile {
-            path,
-            writer,
-            raw_size_b: 0,
-            created_at: Instant::now(),
-        })
+        Ok(ActiveFile { path, writer })
     }
 
     pub fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
-        self.raw_size_b += bytes.len() as u64;
         self.writer.write_all(bytes)?;
         Ok(())
     }
@@ -79,14 +70,6 @@ impl ActiveFile {
 
     pub fn compressed_size_b(&self) -> u64 {
         self.writer.get_ref().compressed_size_b
-    }
-
-    pub fn raw_size_b(&self) -> u64 {
-        self.raw_size_b
-    }
-
-    pub fn created_at(&self) -> Instant {
-        self.created_at
     }
 
     pub fn path(self) -> PathBuf {

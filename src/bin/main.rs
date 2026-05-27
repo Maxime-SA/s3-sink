@@ -5,7 +5,7 @@ use tracing::{error, info};
 
 // # EC2 instance metadata
 // AZ_ID=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone-id)
-const LOCAL_KAFKA_CONFIG: [(&str, &str); 18] = [
+const LOCAL_KAFKA_CONFIG: [(&str, &str); 19] = [
     (
         "bootstrap.servers",
         "b-1.dpkafkadev.ams1av.c6.kafka.eu-west-1.amazonaws.com:9098,b-2.dpkafkadev.ams1av.c6.kafka.eu-west-1.amazonaws.com:9098,b-3.dpkafkadev.ams1av.c6.kafka.eu-west-1.amazonaws.com:9098",
@@ -27,6 +27,7 @@ const LOCAL_KAFKA_CONFIG: [(&str, &str); 18] = [
     ("socket.keepalive.enable", "true"),
     ("security.protocol", "SASL_SSL"),
     ("sasl.mechanism", "OAUTHBEARER"),
+    ("client.id", "DUMMY"), // will need this
 ];
 
 fn get_config() -> SinkConfig {
@@ -96,9 +97,7 @@ fn main() {
         .build()
         .expect("could not build Tokio runtime");
 
-    let sink = Sink::new(&config);
-
-    match runtime.block_on(sink.event_loop(mock_uploader)) {
+    match runtime.block_on(Sink::start(&config, mock_uploader)) {
         Ok(_) => info!("sink event loop exited"),
         Err(error) => error!("sink error: {:?}", error),
     };

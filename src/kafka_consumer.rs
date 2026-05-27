@@ -75,6 +75,17 @@ impl ConsumerContext for CustomContext {
         }
     }
 
+    fn post_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
+        match rebalance {
+            Rebalance::Assign(tpl) => info!("post_rebalance: assigned {tpl:?}"),
+            Rebalance::Revoke(tpl) => info!("post_rebalance: revoked {tpl:?}"),
+            Rebalance::Error(kafka_error) => info!(
+                "post_rebalance: error {:?}",
+                kafka_error.rdkafka_error_code()
+            ),
+        }
+    }
+
     fn commit_callback(
         &self,
         result: rdkafka::error::KafkaResult<()>,
@@ -88,17 +99,6 @@ impl ConsumerContext for CustomContext {
                     kafka_error.rdkafka_error_code()
                 );
             }
-        }
-    }
-
-    fn post_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
-        match rebalance {
-            Rebalance::Assign(tpl) => info!("post_rebalance: assigned {tpl:?}"),
-            Rebalance::Revoke(tpl) => info!("post_rebalance: revoked {tpl:?}"),
-            Rebalance::Error(kafka_error) => info!(
-                "post_rebalance: error {:?}",
-                kafka_error.rdkafka_error_code()
-            ),
         }
     }
 }

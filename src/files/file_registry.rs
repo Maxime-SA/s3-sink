@@ -1,18 +1,12 @@
-use crate::{
-    Result, cache::StreamId, envelopes::SealedFile, error::SinkError, files::file_io::ActiveFile,
-};
+use crate::{Result, data_model::StreamId, error::SinkError, files::file_io::ActiveFile};
 use std::{
     collections::{HashMap, hash_map::Entry},
     path::{Path, PathBuf},
-    time::Instant,
 };
 
 /*
 Todo:
 - Review unit tests
-- Avoid StreamId allocation on:
-    - files
-    - older_than
 */
 
 /*
@@ -21,7 +15,7 @@ Manage all active files.
 pub struct FileRegistry {
     directory: PathBuf,
     compression_level: i32,
-    files: HashMap<StreamId, (ActiveFile, u64)>, // StreamId -> (ActiveFile, RecordCount)
+    files: HashMap<StreamId, ActiveFile>,
 }
 impl FileRegistry {
     pub fn new(directory: &Path, compression_level: i32) -> Self {
@@ -32,48 +26,30 @@ impl FileRegistry {
         }
     }
 
-    pub fn seal(&mut self, id: &StreamId) -> Result<SealedFile> {
-        let (mut file, record_count) = self
+    pub fn seal(&mut self, id: &StreamId) -> Result<ActiveFile> {
+        let mut file = self
             .files
             .remove(id)
             .ok_or_else(|| self.file_not_found("seal", id))?;
         file.finalize()?;
-        Ok(SealedFile::new(file, record_count))
+        Ok(file)
     }
 
-    pub fn files_older_than(&mut self, cut_off: Instant) -> Vec<StreamId> {
-        let mut result = Vec::new();
-        for (id, (file, _)) in &self.files {
-            if file.created_at() < cut_off {
-                result.push(id.clone());
-            }
-        }
-        result
-    }
-
-    pub fn write_all(&mut self, id: &StreamId, bytes: &[u8]) -> Result<()> {
-        let (file, record_count) = self.get_mut_active_file_or_create(id)?;
-        *record_count += 1;
+    pub fn write_all(&mut self, id: StreamId, bytes: &[u8]) -> Result<()> {
+        let file = self.get_mut_active_file_or_create(id)?;
         file.write_all(bytes)
-    }
-
-    pub fn raw_file_size_b(&self, id: &StreamId) -> Result<u64> {
-        self.files
-            .get(id)
-            .map(|val| val.0.raw_size_b())
-            .ok_or_else(|| self.file_not_found("file_size", id))
     }
 
     pub fn active_file_count(&self) -> u64 {
         self.files.len() as u64
     }
 
-    fn get_mut_active_file_or_create(&mut self, id: &StreamId) -> Result<&mut (ActiveFile, u64)> {
-        Ok(match self.files.entry(id.clone()) {
+    fn get_mut_active_file_or_create(&mut self, id: StreamId) -> Result<&mut ActiveFile> {
+        Ok(match self.files.entry(id) {
             Entry::Occupied(occupied) => occupied.into_mut(),
             Entry::Vacant(vacant) => {
                 let file = ActiveFile::new(self.directory.as_path(), self.compression_level)?;
-                vacant.insert((file, 0))
+                vacant.insert(file)
             }
         })
     }

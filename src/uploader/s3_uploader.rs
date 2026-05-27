@@ -70,7 +70,7 @@ impl S3Upload {
 
 impl Uploader for S3Upload {
     fn upload(&self, to_upload: ToUpload) -> BoxFuture {
-        let tm = self.client.clone();
+        let transfer_manager = self.client.clone();
         let bucket = self.bucket.clone();
 
         Box::pin(async move {
@@ -86,7 +86,8 @@ impl Uploader for S3Upload {
                     (1.0 - compressed_size_b as f64 / raw_size_b as f64) * 100.0
                 );
 
-                tm.upload()
+                transfer_manager
+                    .upload()
                     .bucket(&bucket)
                     .key(to_upload.object_key())
                     .body(input_stream)

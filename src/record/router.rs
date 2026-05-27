@@ -1,7 +1,5 @@
 use rdkafka::{Message, message::Headers};
 
-use crate::cache::StreamId;
-
 /*
 Todo:
 - Review unit tests
@@ -19,41 +17,7 @@ impl RouterStrategy {
     const UNKNOWN_SCHEMA_NAME: &str = "unknown_schema_name";
     const UNKNOWN_SCHEMA_VERSION: &str = "unknown_schema_version";
     const UNKNOWN_STATUS_CODE: &str = "unknown_status_code";
-    const DELIMITER: char = '\x1F';
-
-    pub fn partition_spec(&self, id: &StreamId) -> String {
-        let parts: Vec<&str> = id.0.split(Self::DELIMITER).collect();
-
-        let now = chrono::Utc::now();
-        let date = now.format("%Y-%m-%d");
-        let timestamp = now.format("%Y-%m-%dT%H:%M:%SZ");
-        let uuid = &uuid::Uuid::new_v4().to_string()[..8];
-
-        match self {
-            Self::TopicVersion => {
-                format!(
-                    "{schema}/{version}/ingest_year_month_day={date}/{timestamp}-{uuid}.json.zst",
-                    schema = parts[0],
-                    version = parts[1],
-                    date = date,
-                    timestamp = timestamp,
-                    uuid = uuid
-                )
-            }
-            Self::Dlq => {
-                format!(
-                    "{dlq_topic}/{schema}/{version}/error={status_code}/ingest_year_month_day={date}/{timestamp}-{uuid}.json.zst",
-                    dlq_topic = parts[0],
-                    schema = parts[1],
-                    version = parts[2],
-                    status_code = parts[3],
-                    date = date,
-                    timestamp = timestamp,
-                    uuid = uuid
-                )
-            }
-        }
-    }
+    pub const DELIMITER: char = '\x1F';
 
     pub fn write_id<M: Message>(&self, record: &M, buf: &mut String) {
         buf.clear();

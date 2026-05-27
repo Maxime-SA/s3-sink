@@ -1,15 +1,16 @@
-use crate::{error::SinkError, files::ActiveFile, offset_registry::OffsetsVec};
+use crate::{data_model::TopicId, error::SinkError, files::ActiveFile};
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     time::Instant,
 };
 
 pub enum UploadResult {
-    Success(PathBuf, OffsetsVec),
+    Success(PathBuf, HashMap<TopicId, Vec<i64>>),
     Failure(ToUpload, SinkError),
 }
 impl UploadResult {
-    pub fn success(file_to_gc: PathBuf, offsets: OffsetsVec) -> Self {
+    pub fn success(file_to_gc: PathBuf, offsets: HashMap<TopicId, Vec<i64>>) -> Self {
         UploadResult::Success(file_to_gc, offsets)
     }
 
@@ -18,19 +19,17 @@ impl UploadResult {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 pub struct ToUpload {
     object_key: String,
     file: SealedFile,
-    offsets: SealedOffsets,
-    retries: u8,
+    retries: u64,
 }
 impl ToUpload {
-    pub fn new(object_key: String, file: SealedFile, offsets: SealedOffsets, retries: u8) -> Self {
+    pub fn new(object_key: String, file: SealedFile, retries: u64) -> Self {
         ToUpload {
             object_key,
             file,
-            offsets,
             retries,
         }
     }
@@ -41,10 +40,6 @@ impl ToUpload {
 
     pub fn object_key(&self) -> &str {
         &self.object_key
-    }
-
-    pub fn into_parts(self) -> (PathBuf, OffsetsVec) {
-        (self.file.path, self.offsets.0)
     }
 
     pub fn record_count(&self) -> u64 {
@@ -59,44 +54,47 @@ impl ToUpload {
         self.file.compressed_size_b()
     }
 
-    pub fn retries(&self) -> u8 {
+    pub fn retries(&self) -> u64 {
         self.retries
+    }
+
+    pub fn into_parts(self) -> (PathBuf, HashMap<TopicId, Vec<i64>>) {
+        (self.file.path, self.file.offsets_consumed)
     }
 
     pub fn decrement(self) -> Self {
         ToUpload {
             object_key: self.object_key,
             file: self.file,
-            offsets: self.offsets,
             retries: self.retries - 1,
         }
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct SealedOffsets(OffsetsVec);
-impl SealedOffsets {
-    pub fn new(offsets: OffsetsVec) -> Self {
-        SealedOffsets(offsets)
-    }
-}
-
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 pub struct SealedFile {
     path: PathBuf,
     raw_size_b: u64,
     compressed_size_b: u64,
     record_count: u64,
+    offsets_consumed: HashMap<TopicId, Vec<i64>>,
     created_at: Instant,
 }
 impl SealedFile {
-    pub fn new(file: ActiveFile, record_count: u64) -> Self {
+    pub fn new(
+        file: ActiveFile,
+        raw_size_b: u64,
+        record_count: u64,
+        offsets_consumed: HashMap<TopicId, Vec<i64>>,
+        created_at: Instant,
+    ) -> Self {
         SealedFile {
-            raw_size_b: file.raw_size_b(),
             compressed_size_b: file.compressed_size_b(),
-            created_at: file.created_at(),
             path: file.path(),
+            raw_size_b,
             record_count,
+            offsets_consumed,
+            created_at,
         }
     }
 

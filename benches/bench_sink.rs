@@ -110,9 +110,7 @@ fn main() {
         )
         .await;
 
-        let sink = Sink::new(&config);
-
-        match sink.event_loop(uploader).await {
+        match Sink::start(&config, uploader).await {
             Ok(_) => info!("sink event loop exited"),
             Err(error) => error!("sink error: {:?}", error),
         }

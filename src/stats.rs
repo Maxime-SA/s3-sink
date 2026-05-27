@@ -16,12 +16,11 @@ impl Counter {
 }
 
 pub struct Stats {
-    pub record_count: Counter,
-    pub bytes_consumed: Counter,
-    pub files_sealed: Counter,
-    pub success_uploads: Counter,
-    pub failure_uploads: Counter,
-    pub upload_backpressure: Counter,
+    record_count: Counter,
+    bytes_consumed: Counter,
+    files_sealed: Counter,
+    success_uploads: Counter,
+    failure_uploads: Counter,
     started_at: Instant,
     last_tick: Instant,
 }
@@ -38,7 +37,6 @@ impl Stats {
             files_sealed: Counter(0, 0),
             success_uploads: Counter(0, 0),
             failure_uploads: Counter(0, 0),
-            upload_backpressure: Counter(0, 0),
             started_at: now,
             last_tick: now,
         }
@@ -66,9 +64,6 @@ impl Stats {
 
         let window_failed_uploads_per_sec = self.rate(self.failure_uploads.1, since_last_tick);
 
-        let window_uploads_backpressure_per_sec =
-            self.rate(self.upload_backpressure.1, since_last_tick);
-
         info!(
             record_count = self.record_count.1,
             record_per_sec = window_records_per_sec,
@@ -80,8 +75,6 @@ impl Stats {
             successful_uploads_per_sec = window_successful_uploads_per_sec,
             failed_uploads = self.failure_uploads.1,
             failed_uploads_per_sec = window_failed_uploads_per_sec,
-            uploads_backpressure = self.upload_backpressure.1,
-            uploads_backpressure_per_sec = window_uploads_backpressure_per_sec,
             window_duration_sec = since_last_tick,
             "window stats"
         );
@@ -101,8 +94,6 @@ impl Stats {
 
         let agg_failed_uploads_per_sec = self.rate(self.failure_uploads.0, since_started);
 
-        let agg_uploads_backpressure_per_sec = self.rate(self.upload_backpressure.0, since_started);
-
         info!(
             record_count = self.record_count.0,
             record_per_sec = agg_records_per_sec,
@@ -114,8 +105,6 @@ impl Stats {
             successful_uploads_per_sec = agg_successful_uploads_per_sec,
             failed_uploads = self.failure_uploads.0,
             failed_uploads_per_sec = agg_failed_uploads_per_sec,
-            uploads_backpressure = self.upload_backpressure.0,
-            uploads_backpressure_per_sec = agg_uploads_backpressure_per_sec,
             since_started_sec = since_started,
             "aggregate stats"
         );
@@ -140,10 +129,6 @@ impl Stats {
         self.files_sealed.inc(1);
     }
 
-    pub fn inc_upload_backpressure(&mut self) {
-        self.upload_backpressure.inc(1);
-    }
-
     fn rate(&self, counter: u64, time_s: f64) -> u64 {
         if time_s > 0.0 {
             (counter as f64 / time_s) as u64
@@ -158,7 +143,6 @@ impl Stats {
         self.files_sealed.1 = 0;
         self.success_uploads.1 = 0;
         self.failure_uploads.1 = 0;
-        self.upload_backpressure.1 = 0;
         self.last_tick = Instant::now();
     }
 }
