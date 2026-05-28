@@ -14,7 +14,7 @@ use std::{
     rc::Rc,
     time::{Duration, Instant},
 };
-use tracing::error;
+use tracing::{error, info};
 
 struct StreamState {
     bytes_consumed: u64,
@@ -243,6 +243,7 @@ impl StateMachine {
             .streams
             .extract_if(|_, state| state.created_at <= cut_off)
         {
+            info!("timeout on active file");
             self.in_flight_uploads += 1;
 
             self.responses.push(Response::SealAndUpload {
