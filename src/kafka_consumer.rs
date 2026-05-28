@@ -98,7 +98,7 @@ impl ConsumerContext for CustomContext {
                     warn!("could not send partition assignment to event loop: {error:?}");
                 };
             }
-            Rebalance::Revoke(tpl) => info!("post_rebalance: revoked {}", tpl.count()),
+            Rebalance::Revoke(tpl) => info!("post_rebalance: revoked {} partitions", tpl.count()),
             Rebalance::Error(kafka_error) => warn!(
                 "post_rebalance: error {:?}",
                 kafka_error.rdkafka_error_code()
