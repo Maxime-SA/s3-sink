@@ -74,8 +74,8 @@ impl ClientContext for CustomContext {
 impl ConsumerContext for CustomContext {
     fn pre_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
         match rebalance {
-            Rebalance::Assign(tpl) => info!("pre_rebalance: assigning {tpl:?}"),
-            Rebalance::Revoke(tpl) => info!("pre_rebalance: revoking {tpl:?}"),
+            Rebalance::Assign(tpl) => info!("pre_rebalance: assigning {} partitions", tpl.count()),
+            Rebalance::Revoke(tpl) => info!("pre_rebalance: revoking {} partitions", tpl.count()),
             Rebalance::Error(kafka_error) => warn!(
                 "pre_rebalance: error {:?}",
                 kafka_error.rdkafka_error_code()
@@ -86,7 +86,7 @@ impl ConsumerContext for CustomContext {
     fn post_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
         match rebalance {
             Rebalance::Assign(tpl) => {
-                info!("post_rebalance: assigned {tpl:?}");
+                info!("post_rebalance: assigned {} partitions", tpl.count());
 
                 let partitions_assigned = tpl
                     .elements()
@@ -98,7 +98,7 @@ impl ConsumerContext for CustomContext {
                     warn!("could not send partition assignment to event loop: {error:?}");
                 };
             }
-            Rebalance::Revoke(tpl) => info!("post_rebalance: revoked {tpl:?}"),
+            Rebalance::Revoke(tpl) => info!("post_rebalance: revoked {}", tpl.count()),
             Rebalance::Error(kafka_error) => warn!(
                 "post_rebalance: error {:?}",
                 kafka_error.rdkafka_error_code()

@@ -14,7 +14,7 @@ use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
 use std::fs;
 use tokio::select;
 use tokio::signal::unix::SignalKind;
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{error, info};
 
 /*

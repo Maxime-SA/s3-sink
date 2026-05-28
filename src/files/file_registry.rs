@@ -136,4 +136,9 @@ mod test {
 
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
     }
+
+    #[test]
+    fn test_seal_file() {
+        
+    }
 }
