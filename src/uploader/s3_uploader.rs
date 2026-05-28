@@ -110,7 +110,7 @@ impl Uploader for S3Upload {
                     let (file_to_gc, offsets) = to_upload.into_parts();
                     UploadResult::success(file_to_gc, offsets)
                 }
-                Err(se) => UploadResult::failure(to_upload, se),
+                Err(sink_error) => UploadResult::failure(to_upload, sink_error),
             }
         })
     }

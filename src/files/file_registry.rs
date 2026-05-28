@@ -5,13 +5,12 @@ use std::{
 };
 
 /*
-Todo:
-- Review unit tests
+Registry of all active files (i.e. ActiveFile) we have in our sink at any given point in time.
+
+There is one type:
+1. FileRegistry, contains all active files and a couple of wrapper methods around ActiveFile. The event loop interacts with the FileRegistry directly and the FileRegistry interacts with the active files.
 */
 
-/*
-Manage all active files.
-*/
 pub struct FileRegistry {
     directory: PathBuf,
     compression_level: i32,
@@ -61,5 +60,80 @@ impl FileRegistry {
 
 #[cfg(test)]
 mod test {
+    use std::{fs, rc::Rc};
+
     use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_initial_state() {
+        let dir = TempDir::new().unwrap();
+
+        let registry = FileRegistry::new(dir.path(), 3);
+
+        assert_eq!(registry.active_file_count(), 0);
+    }
+
+    #[test]
+    fn test_write_to_non_existing_stream() {
+        let dir = TempDir::new().unwrap();
+
+        let mut registry = FileRegistry::new(dir.path(), 3);
+
+        let stream_id = StreamId(Rc::from("test-stream"));
+
+        let input = b"first line\nsecond line\nthird line\n";
+
+        registry.write_all(stream_id, input).unwrap();
+
+        assert_eq!(registry.active_file_count(), 1);
+
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn test_write_to_existing_stream() {
+        let dir = TempDir::new().unwrap();
+
+        let mut registry = FileRegistry::new(dir.path(), 3);
+
+        let stream_id = StreamId(Rc::from("test-stream"));
+
+        let input = b"first line\nsecond line\nthird line\n";
+
+        registry.write_all(stream_id.clone(), input).unwrap();
+
+        assert_eq!(registry.active_file_count(), 1);
+
+        registry.write_all(stream_id, input).unwrap();
+
+        assert_eq!(registry.active_file_count(), 1);
+
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn test_write_to_multiple_streams() {
+        let dir = TempDir::new().unwrap();
+
+        let mut registry = FileRegistry::new(dir.path(), 3);
+
+        let input = b"first line\nsecond line\nthird line\n";
+
+        let first_stream_id = StreamId(Rc::from("first-stream"));
+
+        registry.write_all(first_stream_id, input).unwrap();
+
+        assert_eq!(registry.active_file_count(), 1);
+
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+        let second_stream_id = StreamId(Rc::from("second-stream"));
+
+        registry.write_all(second_stream_id, input).unwrap();
+
+        assert_eq!(registry.active_file_count(), 2);
+
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+    }
 }

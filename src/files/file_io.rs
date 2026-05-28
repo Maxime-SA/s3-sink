@@ -8,13 +8,14 @@ use uuid::Uuid;
 use zstd::Encoder;
 
 /*
-Todo:
-- Review unit tests
+Centralized point where writing to disk happens.
+
+There are two types:
+1. CountingWriter, a simple wrapper around a type which implements Write. We use this to track how many compressed bytes are written over the lifetime of a file.
+
+2. ActiveFile, takes care of the actual writing of bytes to disk.
 */
 
-/*
-Wrapper to track how many compressed bytes are written
-*/
 struct CountingWriter<W: Write> {
     inner: W,
     compressed_size_b: u64,
@@ -80,4 +81,49 @@ impl ActiveFile {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_write_and_finalize() {
+        let dir = TempDir::new().unwrap();
+
+        let mut file = ActiveFile::new(dir.path(), 3).unwrap();
+
+        let input = b"first line\nsecond line\nthird line\nfourth line\n";
+
+        file.write_all(input).unwrap();
+        file.finalize().unwrap();
+
+        assert!(file.compressed_size_b() > 0);
+
+        let compressed = fs::read(file.path).unwrap();
+        let decompressed = zstd::decode_all(compressed.as_slice()).unwrap();
+
+        assert_eq!(decompressed, input);
+    }
+
+    #[test]
+    fn test_file_extension() {
+        let dir = TempDir::new().unwrap();
+
+        let file = ActiveFile::new(dir.path(), 3).unwrap();
+
+        let path = file.path();
+
+        assert!(path.exists());
+        assert!(path.to_str().unwrap().ends_with("jsonl.zst"));
+    }
+
+    #[test]
+    fn test_counting_writer() {
+        let mut writer = CountingWriter {
+            inner: Vec::new(),
+            compressed_size_b: 0,
+        };
+
+        writer.write_all(b"12345").unwrap();
+
+        assert_eq!(writer.compressed_size_b, 5);
+    }
 }

@@ -1,4 +1,5 @@
 use crate::envelopes::{SealedFile, ToUpload};
+use crate::error::SinkError;
 use crate::files::FileRegistry;
 use crate::json_serializer::JsonSerializer;
 use crate::kafka_consumer::{CustomContext, init_kafka_consumer};
@@ -44,9 +45,6 @@ impl Sink {
         info!("initializing JsonSerializer");
         let mut serializer = JsonSerializer::new();
 
-        info!("initializing StreamConsumer");
-        let consumer = init_kafka_consumer(&config.kafka)?;
-
         info!("initializing ShutdownHandler");
         let mut shutdown = std::pin::pin!(Self::shutdown_signal());
 
@@ -55,6 +53,9 @@ impl Sink {
 
         info!("initializing StateMachine");
         let mut state_machine = StateMachine::new(config);
+
+        info!("initializing StreamConsumer");
+        let consumer = init_kafka_consumer(&config.kafka)?;
 
         // info!("initializing ResponsesBuffer");
         // let mut responses = Vec::with_capacity(16);
@@ -73,7 +74,7 @@ impl Sink {
                 Some(result) = upload_pool.next() => Request::UploadCompletion(result),
 
                 // 2. timer interrupt to commit offsets
-                _ = timer_interrupts.commit_tick.tick() => Request::CommitTick,
+                _ = timer_interrupts.commit_tick.tick() => Request::CommitTick(consumer.assignment()?),
 
                 // 3. timer interrupt to upload any dormant files
                 _ = timer_interrupts.upload_tick.tick() => Request::UploadTick,
@@ -82,7 +83,7 @@ impl Sink {
                 // _ = timer_interrupts.fairness_scheduler_tick.tick() => Request::FairnessSchedulerTick,
 
                 // 5. process Kafka record
-                maybe_next_record = consumer.recv() => Request::NewRecord { record: maybe_next_record?, serializer:  &mut serializer},
+                maybe_next_record = consumer.recv() => Request::ProcessRecord { record: maybe_next_record?, serializer:  &mut serializer},
 
                 // 6. shutdown signal
                 _ = &mut shutdown => Request::ShutdownSignal,
@@ -91,9 +92,11 @@ impl Sink {
             for response in state_machine.handle(request) {
                 match response {
                     Response::WriteFile(stream_id) => {
-                        stats.inc_bytes_consumed(serializer.get_payload().len() as u64);
+                        let payload = serializer.get_payload();
 
-                        file_registry.write_all(stream_id, serializer.get_payload())?
+                        stats.inc_bytes_consumed(payload.len() as u64);
+
+                        file_registry.write_all(stream_id, payload)?
                     }
 
                     Response::SealAndUpload {
@@ -148,17 +151,14 @@ impl Sink {
                         let _ = fs::remove_file(path_buf);
                     }
 
-                    Response::Shutdown => break 'event_loop,
+                    Response::DrainAndShutdown => break 'event_loop,
 
-                    Response::Fatal(sink_error) => {
-                        error!("fatal error occurred in StateMachine: {sink_error:?}");
-                        return Err(sink_error);
-                    }
+                    Response::Fatal(sink_error) => Self::handle_fatal_error(sink_error)?,
                 }
             }
         }
 
-        Self::drain_and_shutdown(consumer, state_machine, upload_pool, uploader).await
+        Self::drain_and_shutdown(consumer, state_machine, upload_pool).await
     }
 
     async fn shutdown_signal() -> Result<()> {
@@ -173,38 +173,29 @@ impl Sink {
         }
     }
 
-    async fn drain_and_shutdown<U: Uploader>(
+    async fn drain_and_shutdown(
         consumer: StreamConsumer<CustomContext>,
         mut state_machine: StateMachine,
         mut upload_pool: FuturesUnordered<BoxFuture>,
-        uploader: U,
     ) -> Result<()> {
-        info!("shutdown signal received, draining and committing");
+        info!("draining upload pool and shutting down");
 
+        // does not retry failed uploads during shutdown phase - should we?
         while let Some(upload_result) = upload_pool.next().await {
             for response in state_machine.handle(Request::UploadCompletion(upload_result)) {
                 match response {
-                    Response::RetryUpload(to_upload) => {
-                        upload_pool.push(uploader.upload(to_upload));
-                    }
-                    Response::Fatal(sink_error) => {
-                        error!("fatal error occurred in StateMachine: {sink_error:?}");
-                        return Err(sink_error);
-                    }
+                    Response::Fatal(sink_error) => Self::handle_fatal_error(sink_error)?,
                     _ => (),
                 }
             }
         }
 
-        for response in state_machine.handle(Request::FinalCommit) {
+        for response in state_machine.handle(Request::FinalCommit(consumer.assignment()?)) {
             match response {
                 Response::CommitSync(tpl) => {
                     Self::handle_commit(&tpl, &consumer, CommitMode::Sync)?
                 }
-                Response::Fatal(sink_error) => {
-                    error!("fatal error occurred in StateMachine: {sink_error:?}");
-                    return Err(sink_error);
-                }
+                Response::Fatal(sink_error) => Self::handle_fatal_error(sink_error)?,
                 _ => (),
             }
         }
@@ -221,6 +212,11 @@ impl Sink {
             consumer.commit(topic_partition_list, mode)?;
         }
         Ok(())
+    }
+
+    fn handle_fatal_error(sink_error: SinkError) -> Result<()> {
+        error!("fatal error occurred in StateMachine: {sink_error:?}");
+        Err(sink_error)
     }
 }
 

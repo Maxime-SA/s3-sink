@@ -33,15 +33,15 @@ impl Default for StreamState {
 }
 
 pub enum Request<'a, 'b> {
-    NewRecord {
+    ProcessRecord {
         record: BorrowedMessage<'a>,
         serializer: &'b mut JsonSerializer,
     },
     UploadTick,
-    CommitTick,
+    CommitTick(TopicPartitionList),
     // FairnessSchedulerTick,
     UploadCompletion(UploadResult),
-    FinalCommit,
+    FinalCommit(TopicPartitionList),
     ShutdownSignal,
 }
 
@@ -59,7 +59,7 @@ pub enum Response {
     CommitAsync(TopicPartitionList),
     CommitSync(TopicPartitionList),
     DeleteFile(PathBuf),
-    Shutdown,
+    DrainAndShutdown,
     Fatal(SinkError),
 }
 
@@ -112,20 +112,40 @@ impl StateMachine {
         self.responses.clear();
 
         match request {
-            Request::NewRecord { record, serializer } => self.handle_new_record(record, serializer),
-            Request::CommitTick => self.handle_commit_tick(),
+            Request::ProcessRecord { record, serializer } => {
+                self.handle_process_record(record, serializer)
+            }
+            Request::CommitTick(current_assignment) => self.handle_commit_tick(current_assignment),
             Request::UploadTick => self.handle_upload_tick(),
             Request::UploadCompletion(upload_result) => {
                 self.handle_upload_completion(upload_result)
             }
-            Request::FinalCommit => self.handle_final_commit(),
-            Request::ShutdownSignal => self.responses.push(Response::Shutdown),
+            Request::FinalCommit(current_assignment) => {
+                self.handle_final_commit(current_assignment)
+            }
+            Request::ShutdownSignal => self.handle_shutdown_signal(),
         }
 
         self.responses.drain(..)
     }
 
-    fn handle_new_record<M: Message>(&mut self, record: M, serializer: &mut JsonSerializer) {
+    fn handle_shutdown_signal(&mut self) {
+        for (id, state) in self.streams.drain() {
+            self.in_flight_uploads += 1;
+
+            self.responses.push(Response::SealAndUpload {
+                id,
+                bytes_consumed: state.bytes_consumed,
+                records_consumed: state.records_consumed,
+                offsets_consumed: state.offsets_consumed,
+                created_at: state.created_at,
+                retries: self.max_uploads_retry,
+            })
+        }
+        self.responses.push(Response::DrainAndShutdown);
+    }
+
+    fn handle_process_record<M: Message>(&mut self, record: M, serializer: &mut JsonSerializer) {
         let Some(metadata) = self.cache.get_or_create_record_metadata(&record) else {
             let err = SinkError::Configuration(format!(
                 "missing topic configuration for '{}'",
@@ -191,15 +211,15 @@ impl StateMachine {
         }
     }
 
-    fn handle_final_commit(&mut self) {
-        match self.make_topic_partition_list() {
+    fn handle_final_commit(&mut self, current_assignment: TopicPartitionList) {
+        match self.make_topic_partition_list(current_assignment) {
             Ok(tpl) => self.responses.push(Response::CommitSync(tpl)),
             Err(sink_error) => self.responses.push(Response::Fatal(sink_error)),
         }
     }
 
-    fn handle_commit_tick(&mut self) {
-        match self.make_topic_partition_list() {
+    fn handle_commit_tick(&mut self, current_assignment: TopicPartitionList) {
+        match self.make_topic_partition_list(current_assignment) {
             Ok(tpl) => self.responses.push(Response::CommitAsync(tpl)),
             Err(sink_error) => self.responses.push(Response::Fatal(sink_error)),
         }
@@ -258,7 +278,10 @@ impl StateMachine {
         }
     }
 
-    fn make_topic_partition_list(&mut self) -> Result<TopicPartitionList> {
+    fn make_topic_partition_list(
+        &mut self,
+        current_assignment: TopicPartitionList,
+    ) -> Result<TopicPartitionList> {
         let mut result = TopicPartitionList::new();
 
         let mut keys_for_gc = vec![];
@@ -266,6 +289,20 @@ impl StateMachine {
         for (TopicId(topic_name, partition), offsets) in &mut self.offsets_uploaded {
             let key = TopicId(topic_name.clone(), *partition);
 
+            /*
+            garbage collect any partitions we no longer own
+             */
+            if current_assignment
+                .find_partition(topic_name.borrow(), *partition)
+                .is_none()
+            {
+                keys_for_gc.push(TopicId(topic_name.clone(), *partition));
+                continue;
+            }
+
+            /*
+            guard against a partition was just assigned, a late upload completion inserts stale offsets, but no new record has been consumed yet
+             */
             let Some(&watermark) = self.offsets_watermark.get(&key) else {
                 continue;
             };
@@ -291,13 +328,13 @@ impl StateMachine {
                 )?;
 
                 self.offsets_watermark.insert(key, offset_to_commit);
-
-                // garbage collect any redundant offsets
-                let new = offsets.split_off(&offset_to_commit);
-                *offsets = new;
             }
 
-            // track redundant topic partition keys
+            // garbage collect any redundant offsets
+            let new = offsets.split_off(&offset_to_commit);
+            *offsets = new;
+
+            // garbage collect empty topic
             if offsets.is_empty() {
                 keys_for_gc.push(TopicId(topic_name.clone(), *partition));
             }
@@ -306,6 +343,7 @@ impl StateMachine {
         // garbage collect any redundant topic partition keys
         for key in keys_for_gc {
             self.offsets_uploaded.remove(&key);
+            self.offsets_watermark.remove(&key);
         }
 
         Ok(result)
