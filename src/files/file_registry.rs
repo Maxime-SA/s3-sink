@@ -138,7 +138,5 @@ mod test {
     }
 
     #[test]
-    fn test_seal_file() {
-        
-    }
+    fn test_seal_file() {}
 }

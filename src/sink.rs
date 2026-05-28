@@ -162,7 +162,11 @@ impl Sink {
             }
         }
 
-        Self::drain_and_shutdown(consumer, state_machine, upload_pool).await
+        Self::drain_and_shutdown(&consumer, &mut state_machine, &mut upload_pool).await?;
+
+        stats.print_report(file_registry.active_file_count(), upload_pool.len() as u64);
+
+        Ok(())
     }
 
     async fn shutdown_signal() -> Result<()> {
@@ -178,9 +182,9 @@ impl Sink {
     }
 
     async fn drain_and_shutdown(
-        consumer: StreamConsumer<CustomContext>,
-        mut state_machine: StateMachine,
-        mut upload_pool: FuturesUnordered<BoxFuture>,
+        consumer: &StreamConsumer<CustomContext>,
+        state_machine: &mut StateMachine,
+        upload_pool: &mut FuturesUnordered<BoxFuture>,
     ) -> Result<()> {
         info!("draining upload pool and shutting down");
 
