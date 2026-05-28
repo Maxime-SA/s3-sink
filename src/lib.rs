@@ -14,8 +14,8 @@ mod timer_interrupts;
 mod uploader;
 
 pub use config::*;
+pub use data_model::TopicName;
 pub use error::Result;
 pub use record::{RecordDecoder, RouterStrategy};
 pub use sink::Sink;
 pub use uploader::{BoxFuture, MockUploader, S3Upload, Uploader};
-pub use data_model::TopicName;

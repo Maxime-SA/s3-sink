@@ -14,6 +14,7 @@ use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
 use std::fs;
 use tokio::select;
 use tokio::signal::unix::SignalKind;
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tracing::{error, info};
 
 /*
@@ -54,11 +55,11 @@ impl Sink {
         info!("initializing StateMachine");
         let mut state_machine = StateMachine::new(config);
 
-        info!("initializing StreamConsumer");
-        let consumer = init_kafka_consumer(&config.kafka)?;
+        info!("initializing RebalanceChannel");
+        let (rebalance_tx, mut rebalance_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        // info!("initializing ResponsesBuffer");
-        // let mut responses = Vec::with_capacity(16);
+        info!("initializing StreamConsumer");
+        let consumer = init_kafka_consumer(&config.kafka, rebalance_tx)?;
 
         'event_loop: loop {
             let request = select! {
@@ -88,6 +89,9 @@ impl Sink {
                 // 6. shutdown signal
                 _ = &mut shutdown => Request::ShutdownSignal,
             };
+
+            // check rebalance assignment channel
+            Self::handle_rebalance(&mut rebalance_rx, &mut state_machine)?;
 
             for response in state_machine.handle(request) {
                 match response {
@@ -200,6 +204,16 @@ impl Sink {
             }
         }
 
+        Ok(())
+    }
+
+    fn handle_rebalance(
+        rx: &mut UnboundedReceiver<Vec<(String, i32)>>,
+        state_machine: &mut StateMachine,
+    ) -> Result<()> {
+        while let Ok(partitions_assigned) = rx.try_recv() {
+            let _ = state_machine.handle(Request::PartitionsAssigned(partitions_assigned));
+        }
         Ok(())
     }
 

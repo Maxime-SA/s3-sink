@@ -1,5 +1,5 @@
 use crate::{
-    Result, SinkConfig,
+    Result, SinkConfig, TopicName,
     cache::Cache,
     data_model::{StreamId, TopicId},
     envelopes::{ToUpload, UploadResult},
@@ -11,6 +11,7 @@ use std::{
     borrow::Borrow,
     collections::{BTreeSet, HashMap},
     path::PathBuf,
+    rc::Rc,
     time::{Duration, Instant},
 };
 use tracing::error;
@@ -42,6 +43,7 @@ pub enum Request<'a, 'b> {
     // FairnessSchedulerTick,
     UploadCompletion(UploadResult),
     FinalCommit(TopicPartitionList),
+    PartitionsAssigned(Vec<(String, i32)>),
     ShutdownSignal,
 }
 
@@ -123,10 +125,19 @@ impl StateMachine {
             Request::FinalCommit(current_assignment) => {
                 self.handle_final_commit(current_assignment)
             }
+            Request::PartitionsAssigned(partitions) => self.handle_partitions_assigned(partitions),
             Request::ShutdownSignal => self.handle_shutdown_signal(),
         }
 
         self.responses.drain(..)
+    }
+
+    fn handle_partitions_assigned(&mut self, partitions: Vec<(String, i32)>) {
+        for (topic_name, partition) in partitions {
+            let topic_id = TopicId(TopicName(Rc::from(topic_name)), partition);
+            self.offsets_watermark.remove(&topic_id);
+            self.offsets_uploaded.remove(&topic_id);
+        }
     }
 
     fn handle_shutdown_signal(&mut self) {

@@ -32,7 +32,10 @@ impl Cache {
         }
     }
 
-    pub fn get_or_create_record_metadata<M: Message>(&mut self, record: &M) -> Option<RecordMetadata> {
+    pub fn get_or_create_record_metadata<M: Message>(
+        &mut self,
+        record: &M,
+    ) -> Option<RecordMetadata> {
         let topic_name_ref = record.topic();
 
         let (topic_name_ptr, &config) = self.configs.get_key_value(topic_name_ref)?;

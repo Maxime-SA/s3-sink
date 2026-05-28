@@ -8,7 +8,8 @@ use rdkafka::{
     consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance, StreamConsumer},
 };
 use std::borrow::Borrow;
-use tracing::info;
+use tokio::sync::mpsc::UnboundedSender;
+use tracing::{info, warn};
 
 /*
 Todo:
@@ -19,13 +20,20 @@ pub struct CustomContext {
     region: Region,
     lifetime_ms: i64,
     principal_name: String,
+    tx: UnboundedSender<Vec<(String, i32)>>,
 }
 impl CustomContext {
-    pub fn new(region: Region, lifetime_ms: i64, principal_name: String) -> Self {
+    pub fn new(
+        region: Region,
+        lifetime_ms: i64,
+        principal_name: String,
+        tx: UnboundedSender<Vec<(String, i32)>>,
+    ) -> Self {
         CustomContext {
             region,
             lifetime_ms,
             principal_name,
+            tx,
         }
     }
 
@@ -68,7 +76,7 @@ impl ConsumerContext for CustomContext {
         match rebalance {
             Rebalance::Assign(tpl) => info!("pre_rebalance: assigning {tpl:?}"),
             Rebalance::Revoke(tpl) => info!("pre_rebalance: revoking {tpl:?}"),
-            Rebalance::Error(kafka_error) => info!(
+            Rebalance::Error(kafka_error) => warn!(
                 "pre_rebalance: error {:?}",
                 kafka_error.rdkafka_error_code()
             ),
@@ -77,9 +85,21 @@ impl ConsumerContext for CustomContext {
 
     fn post_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
         match rebalance {
-            Rebalance::Assign(tpl) => info!("post_rebalance: assigned {tpl:?}"),
+            Rebalance::Assign(tpl) => {
+                info!("post_rebalance: assigned {tpl:?}");
+
+                let partitions_assigned = tpl
+                    .elements()
+                    .iter()
+                    .map(|element| (String::from(element.topic()), element.partition()))
+                    .collect();
+
+                if let Err(error) = self.tx.send(partitions_assigned) {
+                    warn!("could not send partition assignment to event loop: {error:?}");
+                };
+            }
             Rebalance::Revoke(tpl) => info!("post_rebalance: revoked {tpl:?}"),
-            Rebalance::Error(kafka_error) => info!(
+            Rebalance::Error(kafka_error) => warn!(
                 "post_rebalance: error {:?}",
                 kafka_error.rdkafka_error_code()
             ),
@@ -94,7 +114,7 @@ impl ConsumerContext for CustomContext {
         match result {
             Ok(_) => info!("commit_callback: successfully committed {offsets:?}"),
             Err(kafka_error) => {
-                info!(
+                warn!(
                     "commit_callback: error during commit phase {:?}",
                     kafka_error.rdkafka_error_code()
                 );
@@ -103,7 +123,10 @@ impl ConsumerContext for CustomContext {
     }
 }
 
-pub fn init_kafka_consumer(config: &KafkaConfig) -> Result<StreamConsumer<CustomContext>> {
+pub fn init_kafka_consumer(
+    config: &KafkaConfig,
+    tx: UnboundedSender<Vec<(String, i32)>>,
+) -> Result<StreamConsumer<CustomContext>> {
     let mut client_config = ClientConfig::new();
 
     for (key, value) in &config.consumer_properties {
@@ -114,6 +137,7 @@ pub fn init_kafka_consumer(config: &KafkaConfig) -> Result<StreamConsumer<Custom
         config.region.clone(),
         config.token_lifetime_ms,
         config.principal_name.clone(),
+        tx,
     );
 
     let consumer: StreamConsumer<CustomContext> =
