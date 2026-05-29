@@ -14,6 +14,7 @@ const ONE_MB: u64 = ONE_KB * ONE_KB;
 const TARGET_BYTES_PER_TOPIC: u64 = ONE_MB * ONE_KB * 2;
 const NUM_PARTITIONS: i32 = 6;
 
+#[derive(Clone)]
 struct TopicProfile {
     topic: String,
     avg_payload_size: usize,
@@ -157,17 +158,22 @@ async fn main() {
     println!("=== Producing data to {} topics ===", NUM_TOPICS);
     println!("Target: {} MB per topic", TARGET_BYTES_PER_TOPIC / ONE_MB);
 
-    let mut handles = Vec::with_capacity(profiles.len());
+    // Produce in batches to avoid saturating the shared producer queue
+    let batch_size = 10;
+    for batch in profiles.chunks(batch_size) {
+        let mut handles = Vec::with_capacity(batch.len());
 
-    for profile in profiles {
-        let producer = producer.clone();
-        handles.push(tokio::spawn(async move {
-            produce_topic(&producer, &profile).await;
-        }));
-    }
+        for profile in batch {
+            let producer = producer.clone();
+            let profile = profile.clone();
+            handles.push(tokio::spawn(async move {
+                produce_topic(&producer, &profile).await;
+            }));
+        }
 
-    for handle in handles {
-        handle.await.expect("task panicked");
+        for handle in handles {
+            handle.await.expect("task panicked");
+        }
     }
 
     // Flush remaining messages
