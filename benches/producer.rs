@@ -22,31 +22,41 @@ struct TopicProfile {
 }
 
 fn build_profiles() -> Vec<TopicProfile> {
-    let mut profiles: Vec<TopicProfile> = (1..=NUM_TOPICS)
-        .map(|i| {
-            let avg_size = match i {
-                1..=25 => 32_096,
-                26..=50 => 100_000,
-                51..=75 => 500_000,
-                76..=100 => 1_050_000,
-                101..=125 => 10_000_000,
-                126..=140 => 20_000_000,
-                _ => 30_000_000,
-            };
-            TopicProfile {
-                topic: format!("topic-{i}"),
-                avg_payload_size: avg_size,
-                schema_name: format!("topic-{i}"),
-                schema_version: format!("version-{i}"),
-            }
-        })
-        .collect();
+    let mut profiles = Vec::new();
 
-    // DLQ topic with properly formatted JSON payloads (no magic bytes)
+    // let mut profiles: Vec<TopicProfile> = (1..=NUM_TOPICS)
+    //     .map(|i| {
+    //         let avg_size = match i {
+    //             1..=25 => 32_096,
+    //             26..=50 => 100_000,
+    //             51..=75 => 500_000,
+    //             76..=100 => 1_050_000,
+    //             101..=125 => 10_000_000,
+    //             126..=140 => 20_000_000,
+    //             _ => 30_000_000,
+    //         };
+    //         TopicProfile {
+    //             topic: format!("topic-{i}"),
+    //             avg_payload_size: avg_size,
+    //             schema_name: format!("topic-{i}"),
+    //             schema_version: format!("version-{i}"),
+    //         }
+    //     })
+    //     .collect();
+
+    // // DLQ topic with properly formatted JSON payloads (no magic bytes)
+    // profiles.push(TopicProfile {
+    //     topic: "dlq".to_string(),
+    //     avg_payload_size: 4_096,
+    //     schema_name: "dlq".to_string(),
+    //     schema_version: "1".to_string(),
+    // });
+
+    // Single-record topic with JsonSchema format (magic bytes + schema ID prefix)
     profiles.push(TopicProfile {
-        topic: "dlq".to_string(),
-        avg_payload_size: 4_096,
-        schema_name: "dlq".to_string(),
+        topic: "topic-small".to_string(),
+        avg_payload_size: 0, // sentinel: handled separately
+        schema_name: "topic-small".to_string(),
         schema_version: "1".to_string(),
     });
 
@@ -88,6 +98,15 @@ fn generate_dlq_payload(record_id: u64) -> Vec<u8> {
         record_id
     );
     json.into_bytes()
+}
+
+fn generate_topic_small_payload() -> Vec<u8> {
+    let mut payload = Vec::new();
+    // Magic byte (0x00) + Schema ID (4 bytes, big-endian, ID=1)
+    payload.extend_from_slice(b"00001");
+    // JSON payload
+    payload.extend_from_slice(br#"{"id":1,"name":"test","active":true}"#);
+    payload
 }
 
 async fn create_topics(profiles: &[TopicProfile]) {
@@ -162,6 +181,31 @@ async fn main() {
 }
 
 async fn produce_topic(producer: &FutureProducer, profile: &TopicProfile) {
+    // topic-small: produce a single record and return
+    if profile.topic == "topic-small" {
+        let payload = generate_topic_small_payload();
+
+        let headers = OwnedHeaders::new()
+            .insert(rdkafka::message::Header {
+                key: "schema_name",
+                value: Some(profile.schema_name.as_bytes()),
+            })
+            .insert(rdkafka::message::Header {
+                key: "schema_version",
+                value: Some(profile.schema_version.as_bytes()),
+            });
+
+        let record: FutureRecord<'_, str, [u8]> = FutureRecord::to(&profile.topic)
+            .payload(payload.as_slice())
+            .headers(headers);
+
+        match producer.send(record, Duration::from_secs(30)).await {
+            Ok(_) => println!("  topic-small done: 1 record"),
+            Err((err, _)) => eprintln!("  topic-small error: {err}"),
+        }
+        return;
+    }
+
     let mut bytes_produced: u64 = 0;
     let mut records_produced: u64 = 0;
 
