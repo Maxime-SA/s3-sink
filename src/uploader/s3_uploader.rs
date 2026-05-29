@@ -72,15 +72,13 @@ impl S3Upload {
     pub fn partition_spec(id: &StreamId) -> String {
         Self::partition_spec_inner(
             id,
-            || chrono::Utc::now(),
+            chrono::Utc::now(),
             &uuid::Uuid::new_v4().to_string()[..8],
         )
     }
 
-    fn partition_spec_inner(id: &StreamId, now: fn() -> DateTime<Utc>, uuid: &str) -> String {
+    fn partition_spec_inner(id: &StreamId, now: DateTime<Utc>, uuid: &str) -> String {
         let mut parts: Vec<&str> = id.0.split(RouterStrategy::DELIMITER).collect();
-
-        let now = now();
 
         let suffix = format!(
             "ingest_year_month_day={}/{}-{}.jsonl.zst",
@@ -164,13 +162,13 @@ mod test {
 
         let first_actual_result = S3Upload::partition_spec_inner(
             &first_stream_id,
-            || Utc.with_ymd_and_hms(2026, 5, 29, 14, 30, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 5, 29, 14, 30, 0).unwrap(),
             "1234",
         );
 
         let second_actual_result = S3Upload::partition_spec_inner(
             &second_stream_id,
-            || Utc.with_ymd_and_hms(2026, 5, 29, 14, 30, 15).unwrap(),
+            Utc.with_ymd_and_hms(2026, 5, 29, 14, 30, 15).unwrap(),
             "5678",
         );
 
