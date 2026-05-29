@@ -123,11 +123,7 @@ impl Sink {
                             created_at,
                         );
 
-                        let object_key = S3Upload::partition_spec(
-                            &id,
-                            || chrono::Utc::now(),
-                            &uuid::Uuid::new_v4().to_string()[..8],
-                        );
+                        let object_key = S3Upload::partition_spec(&id);
 
                         let to_upload = ToUpload::new(object_key, sealed_file, retries);
 
