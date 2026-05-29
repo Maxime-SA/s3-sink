@@ -16,7 +16,6 @@ impl RecordDecoder {
                 we can check against CSR to make sure this is an actual schema
                 we can build this list before starting the sink and keep it in memory
                 */
-
                 let _ = payload.get(1..5);
 
                 magic_byte

@@ -67,3 +67,13 @@ impl Cache {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_new_cache() {
+        
+    }
+}
