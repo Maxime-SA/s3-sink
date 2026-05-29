@@ -41,6 +41,13 @@ fn get_bench_config() -> SinkConfig {
                 },
                 vec![TopicName(Rc::from("dlq"))],
             ),
+            (
+                TopicConfig {
+                    decoder: RecordDecoder::JsonStringDecoder,
+                    router: RouterStrategy::TopicVersion,
+                },
+                vec![TopicName(Rc::from("topic-small"))],
+            ),
         ],
         consumer_properties: BENCH_KAFKA_CONFIG
             .iter()
