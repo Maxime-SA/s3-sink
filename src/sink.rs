@@ -6,8 +6,8 @@ use crate::kafka_consumer::{CustomContext, init_kafka_consumer};
 use crate::state_machine::{Request, Response, StateMachine};
 use crate::stats::Stats;
 use crate::timer_interrupts::TimerInterrupts;
-use crate::uploader::{Uploader, partition_spec};
-use crate::{BoxFuture, Result, SinkConfig};
+use crate::uploader::Uploader;
+use crate::{BoxFuture, Result, S3Upload, SinkConfig};
 use futures::stream::{FuturesUnordered, StreamExt};
 use rdkafka::TopicPartitionList;
 use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
@@ -123,7 +123,11 @@ impl Sink {
                             created_at,
                         );
 
-                        let object_key = partition_spec(&id);
+                        let object_key = S3Upload::partition_spec(
+                            &id,
+                            || chrono::Utc::now(),
+                            &uuid::Uuid::new_v4().to_string()[..8],
+                        );
 
                         let to_upload = ToUpload::new(object_key, sealed_file, retries);
 
