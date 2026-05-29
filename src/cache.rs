@@ -73,7 +73,5 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_new_cache() {
-        
-    }
+    fn test_new_cache() {}
 }
