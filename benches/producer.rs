@@ -22,35 +22,33 @@ struct TopicProfile {
 }
 
 fn build_profiles() -> Vec<TopicProfile> {
-    let mut profiles = Vec::new();
-
-    // let mut profiles: Vec<TopicProfile> = (1..=NUM_TOPICS)
-    //     .map(|i| {
-    //         let avg_size = match i {
-    //             1..=25 => 32_096,
-    //             26..=50 => 100_000,
-    //             51..=75 => 500_000,
-    //             76..=100 => 1_050_000,
-    //             101..=125 => 10_000_000,
-    //             126..=140 => 20_000_000,
-    //             _ => 30_000_000,
-    //         };
-    //         TopicProfile {
-    //             topic: format!("topic-{i}"),
-    //             avg_payload_size: avg_size,
-    //             schema_name: format!("topic-{i}"),
-    //             schema_version: format!("version-{i}"),
-    //         }
-    //     })
-    //     .collect();
+    let mut profiles: Vec<TopicProfile> = (1..=NUM_TOPICS)
+        .map(|i| {
+            let avg_size = match i {
+                1..=25 => 32_096,
+                26..=50 => 100_000,
+                51..=75 => 500_000,
+                76..=100 => 1_050_000,
+                101..=125 => 10_000_000,
+                126..=140 => 20_000_000,
+                _ => 30_000_000,
+            };
+            TopicProfile {
+                topic: format!("topic-{i}"),
+                avg_payload_size: avg_size,
+                schema_name: format!("topic-{i}"),
+                schema_version: format!("version-{i}"),
+            }
+        })
+        .collect();
 
     // // DLQ topic with properly formatted JSON payloads (no magic bytes)
-    // profiles.push(TopicProfile {
-    //     topic: "dlq".to_string(),
-    //     avg_payload_size: 4_096,
-    //     schema_name: "dlq".to_string(),
-    //     schema_version: "1".to_string(),
-    // });
+    profiles.push(TopicProfile {
+        topic: "dlq".to_string(),
+        avg_payload_size: 4_096,
+        schema_name: "dlq".to_string(),
+        schema_version: "1".to_string(),
+    });
 
     // Single-record topic with JsonSchema format (magic bytes + schema ID prefix)
     profiles.push(TopicProfile {
@@ -65,7 +63,7 @@ fn build_profiles() -> Vec<TopicProfile> {
 
 fn generate_payload(size: usize, record_id: u64) -> Vec<u8> {
     let mut payload = Vec::with_capacity(size);
-    payload.extend_from_slice(b"00001");
+    payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00]);
     // Generate pseudo-random but valid JSON
     write!(
         payload,
@@ -103,7 +101,7 @@ fn generate_dlq_payload(record_id: u64) -> Vec<u8> {
 fn generate_topic_small_payload() -> Vec<u8> {
     let mut payload = Vec::new();
     // Magic byte (0x00) + Schema ID (4 bytes, big-endian, ID=1)
-    payload.extend_from_slice(b"00001");
+    payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00]);
     // JSON payload
     payload.extend_from_slice(br#"{"id":1,"name":"test","active":true}"#);
     payload

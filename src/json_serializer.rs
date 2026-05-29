@@ -127,7 +127,7 @@ mod test {
 
         let mut payload = vec![];
         // Add magic bytes
-        payload.extend_from_slice(b"00000");
+        payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00]);
         // Add actual JSON
         payload.extend_from_slice(b"{\"event\":{},\"product\":{\"id\":1}}");
 
