@@ -71,7 +71,96 @@ impl Cache {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::{RecordDecoder, test_utils::make_owned_message};
 
     #[test]
-    fn test_new_cache() {}
+    fn test_new_cache() {
+        let topic_a = TopicName(Rc::from("topic-a"));
+        let topic_b = TopicName(Rc::from("topic-b"));
+        let topic_c = TopicName(Rc::from("topic-c"));
+
+        let input_topics = vec![
+            (
+                TopicConfig {
+                    decoder: RecordDecoder::JsonSchemaDecoder,
+                    router: RouterStrategy::TopicVersion,
+                },
+                vec![topic_a.clone(), topic_b.clone()],
+            ),
+            (
+                TopicConfig {
+                    decoder: RecordDecoder::JsonStringDecoder,
+                    router: RouterStrategy::Dlq,
+                },
+                vec![topic_c.clone()],
+            ),
+        ];
+
+        let cache = Cache::new(&input_topics);
+
+        assert_eq!(
+            cache.configs.get(&topic_a).unwrap(),
+            &TopicConfig {
+                decoder: RecordDecoder::JsonSchemaDecoder,
+                router: RouterStrategy::TopicVersion,
+            }
+        );
+
+        assert_eq!(
+            cache.configs.get(&topic_b).unwrap(),
+            &TopicConfig {
+                decoder: RecordDecoder::JsonSchemaDecoder,
+                router: RouterStrategy::TopicVersion,
+            }
+        );
+
+        assert_eq!(
+            cache.configs.get(&topic_c).unwrap(),
+            &TopicConfig {
+                decoder: RecordDecoder::JsonStringDecoder,
+                router: RouterStrategy::Dlq,
+            }
+        );
+
+        assert!(cache.ids.is_empty());
+    }
+
+    #[test]
+    fn get_or_create_record_metadata_with_topic_config() {
+        let topic_name = TopicName(Rc::from("topic-a"));
+
+        let input_topics = vec![(
+            TopicConfig {
+                decoder: RecordDecoder::JsonSchemaDecoder,
+                router: RouterStrategy::TopicVersion,
+            },
+            vec![topic_name.clone()],
+        )];
+
+        let message = make_owned_message(Some("topic-a"), None, None);
+
+        let mut buf = String::new();
+        RouterStrategy::TopicVersion.write_id(&message, &mut buf);
+
+        let mut cache = Cache::new(&input_topics);
+
+        let metadata = cache.get_or_create_record_metadata(&message).unwrap();
+
+        assert_eq!(metadata.topic_name, topic_name);
+
+        assert_eq!(metadata.stream_id, StreamId(Rc::from(buf)));
+    }
+
+    #[test]
+    fn get_or_create_record_metadata_without_topic_config() {
+        let input_topics = vec![];
+
+        let message = make_owned_message(Some("topic-a"), None, None);
+
+        let mut cache = Cache::new(&input_topics);
+
+        let metadata = cache.get_or_create_record_metadata(&message);
+
+        assert_eq!(metadata, None);
+    }
 }

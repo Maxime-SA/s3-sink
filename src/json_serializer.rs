@@ -90,36 +90,7 @@ impl JsonSerializer {
 #[cfg(test)]
 mod test {
     use super::*;
-    use rdkafka::message::{OwnedHeaders, OwnedMessage};
-
-    fn make_message(payload: Option<Vec<u8>>, headers: Option<OwnedHeaders>) -> OwnedMessage {
-        OwnedMessage::new(
-            payload,
-            None,
-            String::from("topic"),
-            rdkafka::Timestamp::NotAvailable,
-            0,
-            0,
-            headers,
-        )
-    }
-
-    fn make_headers(headers: Option<Vec<(String, String)>>) -> OwnedHeaders {
-        let default_headers = vec![
-            ("header-A".into(), "value-A".into()),
-            ("header-B".into(), "value-B".into()),
-        ];
-
-        let mut result = OwnedHeaders::new();
-
-        for (key, value) in &headers.unwrap_or(default_headers) {
-            result = result.insert(rdkafka::message::Header {
-                key: key,
-                value: Some(value),
-            });
-        }
-        result
-    }
+    use crate::test_utils::{make_default_owned_headers, make_owned_message};
 
     #[test]
     fn test_json_schema_type() {
@@ -131,8 +102,8 @@ mod test {
         // Add actual JSON
         payload.extend_from_slice(b"{\"event\":{},\"product\":{\"id\":1}}");
 
-        let headers = make_headers(None);
-        let message = make_message(Some(payload.to_vec()), Some(headers));
+        let headers = make_default_owned_headers();
+        let message = make_owned_message(None, Some(payload.to_vec()), Some(headers));
 
         let actual_result = String::from_utf8(
             serializer
@@ -157,8 +128,8 @@ mod test {
         let mut payload = vec![];
         payload.extend_from_slice(b"\"random-string\"");
 
-        let headers = make_headers(None);
-        let message = make_message(Some(payload.to_vec()), Some(headers));
+        let headers = make_default_owned_headers();
+        let message = make_owned_message(None, Some(payload.to_vec()), Some(headers));
 
         let actual_result = String::from_utf8(
             serializer
@@ -183,7 +154,7 @@ mod test {
         let mut payload = vec![];
         payload.extend_from_slice(b"\"random-string\"");
 
-        let message = make_message(Some(payload.to_vec()), None);
+        let message = make_owned_message(None, Some(payload.to_vec()), None);
 
         let actual_result = String::from_utf8(
             serializer
@@ -203,8 +174,8 @@ mod test {
     fn test_empty_payload_with_headers() {
         let mut serializer = JsonSerializer::new();
 
-        let headers = make_headers(None);
-        let message = make_message(None, Some(headers));
+        let headers = make_default_owned_headers();
+        let message = make_owned_message(None, None, Some(headers));
 
         let actual_result = serializer
             .serialize(&message, &RecordDecoder::JsonStringDecoder)
@@ -223,8 +194,8 @@ mod test {
         let mut payload = vec![];
         payload.extend_from_slice(b"{\"data\": 4}");
 
-        let headers = make_headers(None);
-        let message = make_message(Some(payload.to_vec()), Some(headers));
+        let headers = make_default_owned_headers();
+        let message = make_owned_message(None, Some(payload.to_vec()), Some(headers));
 
         let actual_result = serializer
             .serialize(&message, &RecordDecoder::JsonSchemaDecoder)

@@ -13,6 +13,9 @@ mod stats;
 mod timer_interrupts;
 mod uploader;
 
+#[cfg(test)]
+mod test_utils;
+
 pub use config::*;
 pub use data_model::TopicName;
 pub use error::Result;

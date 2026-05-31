@@ -9,7 +9,7 @@ A StreamId is derived from a record using a RouterStrategy.
 
 A StreamId is then used to identify the active file writer and track consumed and uploaded offsets.
 */
-#[derive(Eq, Hash, PartialEq, Clone)]
+#[derive(Eq, Hash, PartialEq, Clone, Debug)]
 pub struct StreamId(pub Rc<str>);
 
 impl fmt::Display for StreamId {
@@ -36,6 +36,7 @@ impl Borrow<str> for TopicName {
 #[derive(Eq, Hash, PartialEq)]
 pub struct TopicId(pub TopicName, pub i32); // (topic name, partition)
 
+#[derive(PartialEq, Debug)]
 pub struct RecordMetadata {
     pub topic_name: TopicName,
     pub stream_id: StreamId,

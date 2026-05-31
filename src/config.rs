@@ -2,7 +2,7 @@ use crate::{RecordDecoder, RouterStrategy, data_model::TopicName};
 use aws_config::Region;
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TopicConfig {
     pub decoder: RecordDecoder, // decoder knows how to extract Kafka value payload
     pub router: RouterStrategy, // router knows which stream to forward a record to

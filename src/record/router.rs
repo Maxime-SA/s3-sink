@@ -3,7 +3,7 @@ use rdkafka::{Message, message::Headers};
 /*
 RouterStrategy defines a mapping between a record and its StreamId.
 */
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RouterStrategy {
     TopicVersion,
     Dlq,
@@ -74,41 +74,13 @@ impl RouterStrategy {
 
 #[cfg(test)]
 mod test {
+    use crate::test_utils::{make_default_owned_headers, make_owned_headers, make_owned_message};
+
     use super::*;
-    use rdkafka::message::{OwnedHeaders, OwnedMessage};
-
-    fn make_message(topic: Option<&str>, headers: Option<OwnedHeaders>) -> OwnedMessage {
-        OwnedMessage::new(
-            None,
-            None,
-            String::from(topic.unwrap_or("topic")),
-            rdkafka::Timestamp::NotAvailable,
-            0,
-            0,
-            headers,
-        )
-    }
-
-    fn make_headers(headers: Vec<(String, String)>) -> OwnedHeaders {
-        let mut result = OwnedHeaders::new();
-
-        for (key, value) in &headers {
-            result = result.insert(rdkafka::message::Header {
-                key: key,
-                value: Some(value),
-            });
-        }
-        result
-    }
 
     #[test]
     fn test_get_header_when_present() {
-        let headers = vec![
-            ("header-A".into(), "value-A".into()),
-            ("header-B".into(), "value-B".into()),
-        ];
-
-        let record = make_message(None, Some(make_headers(headers)));
+        let record = make_owned_message(None, None, Some(make_default_owned_headers()));
 
         let first_actual_result = RouterStrategy::get_header(&record, "header-A").unwrap();
         let second_actual_result = RouterStrategy::get_header(&record, "header-B").unwrap();
@@ -119,7 +91,7 @@ mod test {
 
     #[test]
     fn test_get_header_when_absent() {
-        let record = make_message(None, None);
+        let record = make_owned_message(None, None, None);
 
         let first_actual_result = RouterStrategy::get_header(&record, "header-B");
 
@@ -135,7 +107,7 @@ mod test {
             ("schema_version".into(), "1.0.0".into()),
         ];
 
-        let message = make_message(None, Some(make_headers(headers)));
+        let message = make_owned_message(None, None, Some(make_owned_headers(headers)));
 
         RouterStrategy::TopicVersion.write_id(&message, &mut buf);
 
@@ -152,7 +124,7 @@ mod test {
             ("status_code".into(), "400".into()),
         ];
 
-        let message = make_message(Some("dlq"), Some(make_headers(headers)));
+        let message = make_owned_message(Some("dlq"), None, Some(make_owned_headers(headers)));
 
         RouterStrategy::Dlq.write_id(&message, &mut buf);
 
@@ -166,7 +138,7 @@ mod test {
     fn test_write_id_topic_version_unknown() {
         let mut buf = String::new();
 
-        let message = make_message(None, None);
+        let message = make_owned_message(None, None, None);
 
         RouterStrategy::TopicVersion.write_id(&message, &mut buf);
 
@@ -180,7 +152,7 @@ mod test {
     fn test_write_id_dlq_unknown() {
         let mut buf = String::new();
 
-        let message = make_message(Some("dlq"), None);
+        let message = make_owned_message(Some("dlq"), None, None);
 
         RouterStrategy::Dlq.write_id(&message, &mut buf);
 

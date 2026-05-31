@@ -130,6 +130,7 @@ impl Sink {
                         upload_pool.push(uploader.upload(to_upload));
                     }
 
+                    // should we track how many retry there are in a given time slice and apply backpressure?
                     Response::RetryUpload(to_upload) => {
                         stats.inc_failure_uploads();
 
