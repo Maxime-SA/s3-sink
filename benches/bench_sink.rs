@@ -70,7 +70,7 @@ fn get_bench_config() -> SinkConfig {
     };
 
     let upload_config = UploadConfig {
-        max_retry: 3,
+        max_uploads_retry: 3,
         max_concurrent_uploads: 50,
         max_active_file_timeout_ms: 1000 * 60 * 1,
     };

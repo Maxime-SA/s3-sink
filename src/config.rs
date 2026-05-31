@@ -28,7 +28,7 @@ pub struct TimersConfig {
 }
 
 pub struct UploadConfig {
-    pub max_retry: u64, // maximum number of times to retry an upload before crashing
+    pub max_uploads_retry: u64, // maximum number of times to retry an upload before crashing
     pub max_concurrent_uploads: u64, // maximum number of concurrent uploads at any given point
     pub max_active_file_timeout_ms: u64, // maximum amount of time (milliseconds) that an active file can remain open
 }

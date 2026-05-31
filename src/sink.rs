@@ -3,7 +3,7 @@ use crate::error::SinkError;
 use crate::files::FileRegistry;
 use crate::json_serializer::JsonSerializer;
 use crate::kafka_consumer::{CustomContext, init_kafka_consumer};
-use crate::state_machine::{Request, Response, StateMachine};
+use crate::state_machine::{Request, Response, StateMachine, StateMachineConfiguration};
 use crate::stats::Stats;
 use crate::timer_interrupts::TimerInterrupts;
 use crate::uploader::Uploader;
@@ -19,9 +19,9 @@ use tracing::{error, info};
 
 /*
 Todo:
-- Handle Kafka rebalance appropriately
+- Unit tests
 - Separate recoverable from unrecoverable errors
-- Backpressure for in-flight uploads, local files, offsets in
+- Backpressure for in-flight uploads, local files disk space, offsets in
 registry, ...
 - Fairness Scheduler
 */
@@ -53,7 +53,13 @@ impl Sink {
         let mut stats: Stats = Stats::new();
 
         info!("initializing StateMachine");
-        let mut state_machine = StateMachine::new(config);
+        let state_machine_config = StateMachineConfiguration {
+            max_active_file_timeout_ms: config.uploads.max_active_file_timeout_ms,
+            max_concurrent_uploads: config.uploads.max_concurrent_uploads,
+            max_uploads_retry: config.uploads.max_uploads_retry,
+            target_file_size_b: config.files.target_file_size_b,
+        };
+        let mut state_machine = StateMachine::new(&config.kafka.input_topics, state_machine_config);
 
         info!("initializing RebalanceChannel");
         let (rebalance_tx, mut rebalance_rx) = tokio::sync::mpsc::unbounded_channel();

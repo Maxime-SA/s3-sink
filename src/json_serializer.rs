@@ -3,17 +3,14 @@ use rdkafka::{Message, message::Headers};
 
 /*
 Assumptions:
-- JsonSchemaDecoder is valid Json Schema.
-- JsonStringDecoder is valid Json string with characters escaped.
-- Headers that contain problematic characters will be silently dropped.
+- No validation will be done on the records encoding:
+    - JsonSchemaDecoder is a valid CSR Json Schema (i.e. magic byte + schema id).
+    - JsonStringDecoder is a valid Json String.
+- Headers that contain problematic characters will be dropped.
 
 Thoughts:
-- These are not validated, if they are not respected, data will be corrupted.
+- If the above assumptions are violated, data will be corrupted.
 - Not the most robust SerDe but for our use case, I think the tradeoffs are worth it.
-- Buffer does not trim down once capacity is increased.
-
-Todo:
-- Review unit tests
 */
 
 pub struct JsonSerializer {
@@ -24,7 +21,7 @@ impl JsonSerializer {
 
     pub fn new() -> Self {
         JsonSerializer {
-            buf: Vec::with_capacity(Self::BUFFER_CAPACITY),
+            buf: Vec::with_capacity(Self::BUFFER_CAPACITY), // does not trim down once capacity is increased
         }
     }
 
@@ -93,7 +90,7 @@ mod test {
     use crate::test_utils::{make_default_owned_headers, make_owned_message};
 
     #[test]
-    fn test_json_schema_type() {
+    fn test_json_schema_decoder() {
         let mut serializer = JsonSerializer::new();
 
         let mut payload = vec![];
@@ -122,7 +119,7 @@ mod test {
     }
 
     #[test]
-    fn test_string_type() {
+    fn test_json_string_decoder() {
         let mut serializer = JsonSerializer::new();
 
         let mut payload = vec![];
@@ -187,7 +184,7 @@ mod test {
     }
 
     #[test]
-    fn test_decoder_error() {
+    fn test_json_schema_decoder_error() {
         let mut serializer = JsonSerializer::new();
 
         // payload without magic bytes

@@ -1,5 +1,5 @@
 use crate::{
-    Result, SinkConfig, TopicName,
+    Result, TopicConfig, TopicName,
     cache::Cache,
     data_model::{StreamId, TopicId},
     envelopes::{ToUpload, UploadResult},
@@ -14,7 +14,7 @@ use std::{
     rc::Rc,
     time::{Duration, Instant},
 };
-use tracing::{error, info};
+use tracing::error;
 
 struct StreamState {
     bytes_consumed: u64,
@@ -65,6 +65,13 @@ pub enum Response {
     Fatal(SinkError),
 }
 
+pub struct StateMachineConfiguration {
+    pub max_active_file_timeout_ms: u64,
+    pub max_concurrent_uploads: u64,
+    pub max_uploads_retry: u64,
+    pub target_file_size_b: u64,
+}
+
 pub struct StateMachine {
     // memoization to prevent redundant allocations
     cache: Cache,
@@ -80,32 +87,24 @@ pub struct StateMachine {
     in_flight_uploads: u64,
 
     // configuration
-    max_active_file_timeout_ms: u64,
-    max_concurrent_uploads: u64,
-    max_uploads_retry: u64,
-    target_file_size_b: u64,
+    config: StateMachineConfiguration,
 
     // buf to prevent allocation on every record
     responses: Vec<Response>,
 }
 
 impl StateMachine {
-    pub fn new(config: &SinkConfig) -> Self {
+    pub fn new(
+        input_topics: &Vec<(TopicConfig, Vec<TopicName>)>,
+        config: StateMachineConfiguration,
+    ) -> Self {
         Self {
-            cache: Cache::new(&config.kafka.input_topics),
-
+            cache: Cache::new(input_topics),
             streams: HashMap::new(),
-
             offsets_uploaded: HashMap::new(),
             offsets_watermark: HashMap::new(),
-
             in_flight_uploads: 0,
-
-            max_active_file_timeout_ms: config.uploads.max_active_file_timeout_ms,
-            max_concurrent_uploads: config.uploads.max_concurrent_uploads,
-            max_uploads_retry: config.uploads.max_retry,
-            target_file_size_b: config.files.target_file_size_b,
-
+            config,
             responses: Vec::with_capacity(16),
         }
     }
@@ -150,7 +149,7 @@ impl StateMachine {
                 records_consumed: state.records_consumed,
                 offsets_consumed: state.offsets_consumed,
                 created_at: state.created_at,
-                retries: self.max_uploads_retry,
+                retries: self.config.max_uploads_retry,
             })
         }
         self.responses.push(Response::DrainAndShutdown);
@@ -197,8 +196,8 @@ impl StateMachine {
                     .push(Response::WriteFile(metadata.stream_id.clone()));
 
                 // should seal and upload?
-                if stream_state.bytes_consumed >= self.target_file_size_b
-                    && self.in_flight_uploads < self.max_concurrent_uploads
+                if stream_state.bytes_consumed >= self.config.target_file_size_b
+                    && self.in_flight_uploads < self.config.max_concurrent_uploads
                 {
                     // inc in_flight uploads
                     self.in_flight_uploads += 1;
@@ -213,7 +212,7 @@ impl StateMachine {
                         records_consumed: stream_state.records_consumed,
                         offsets_consumed: stream_state.offsets_consumed,
                         created_at: stream_state.created_at,
-                        retries: self.max_uploads_retry,
+                        retries: self.config.max_uploads_retry,
                     });
                 }
             }
@@ -237,7 +236,8 @@ impl StateMachine {
     }
 
     fn handle_upload_tick(&mut self) {
-        let cut_off = Instant::now() - Duration::from_millis(self.max_active_file_timeout_ms);
+        let cut_off =
+            Instant::now() - Duration::from_millis(self.config.max_active_file_timeout_ms);
 
         for (id, state) in self
             .streams
@@ -251,7 +251,7 @@ impl StateMachine {
                 records_consumed: state.records_consumed,
                 offsets_consumed: state.offsets_consumed,
                 created_at: state.created_at,
-                retries: self.max_uploads_retry,
+                retries: self.config.max_uploads_retry,
             })
         }
     }
@@ -358,4 +358,23 @@ impl StateMachine {
 
         Ok(result)
     }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    mod process_record {}
+
+    mod upload_tick {}
+
+    mod commit_tick {}
+
+    mod upload_completion {}
+
+    mod final_commit {}
+
+    mod partition_assignment {}
+
+    mod shutdown_signal {}
 }
