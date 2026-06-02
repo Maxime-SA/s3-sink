@@ -169,4 +169,62 @@ mod test {
             )
         );
     }
+
+    #[test]
+    fn test_write_id_clears_buffer_between_calls() {
+        let mut buf = String::from("stale data");
+
+        let headers = vec![
+            ("schema_name".into(), "my-schema".into()),
+            ("schema_version".into(), "2.0.0".into()),
+        ];
+
+        let message = make_owned_message(None, None, Some(make_owned_headers(headers)), None, None);
+
+        RouterStrategy::TopicVersion.write_id(&message, &mut buf);
+
+        assert_eq!(buf, "my-schema\x1F2.0.0");
+    }
+
+    #[test]
+    fn test_get_header_non_utf8_value() {
+        let mut headers = rdkafka::message::OwnedHeaders::new();
+
+        headers = headers.insert(rdkafka::message::Header {
+            key: "schema_name",
+            value: Some(&[0xFF, 0xFE]), // invalid UTF-8
+        });
+
+        let message = make_owned_message(None, None, Some(headers), None, None);
+
+        assert_eq!(RouterStrategy::get_header(&message, "schema_name"), None);
+    }
+
+    #[test]
+    fn test_write_id_topic_version_partial_schema_name_only() {
+        let mut buf = String::new();
+
+        let headers = vec![("schema_name".into(), "my-schema".into())];
+
+        let message = make_owned_message(None, None, Some(make_owned_headers(headers)), None, None);
+
+        RouterStrategy::TopicVersion.write_id(&message, &mut buf);
+
+        assert_eq!(buf, "my-schema\x1Funknown_schema_version");
+    }
+
+    #[test]
+    fn test_get_header_duplicate_keys_returns_first() {
+        let headers = vec![
+            ("schema_name".into(), "first".into()),
+            ("schema_name".into(), "second".into()),
+        ];
+
+        let message = make_owned_message(None, None, Some(make_owned_headers(headers)), None, None);
+
+        assert_eq!(
+            RouterStrategy::get_header(&message, "schema_name"),
+            Some("first")
+        );
+    }
 }

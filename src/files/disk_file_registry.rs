@@ -142,7 +142,7 @@ mod test {
     }
 
     #[test]
-    fn test_close_file() {
+    fn test_close_file_that_exists() {
         let dir = TempDir::new().unwrap();
 
         let mut registry = DiskFileRegistry::new(dir.path(), 3);
@@ -160,5 +160,16 @@ mod test {
         assert_eq!(path.parent().unwrap(), dir.path());
 
         assert!(compressed_size_b > 0)
+    }
+
+    #[test]
+    fn test_close_non_existent_stream() {
+        let dir = TempDir::new().unwrap();
+
+        let mut registry = DiskFileRegistry::new(dir.path(), 3);
+
+        let stream_id = StreamId(Rc::from("ghost-stream"));
+
+        assert!(registry.close(&stream_id).is_err());
     }
 }

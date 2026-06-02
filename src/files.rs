@@ -1,11 +1,9 @@
+use crate::{Result, data_model::StreamId};
+pub use disk_file_registry::DiskFileRegistry;
 use std::path::PathBuf;
 
-use crate::{Result, data_model::StreamId};
-
+mod disk_file_registry;
 mod file_io;
-mod file_registry;
-
-pub use file_registry::DiskFileRegistry;
 
 pub trait FileRegistry {
     fn close(&mut self, id: &StreamId) -> Result<(PathBuf, u64)>;

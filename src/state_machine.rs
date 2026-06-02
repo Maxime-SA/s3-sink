@@ -486,12 +486,13 @@ mod test {
     fn make_state_machine(
         input_topics: Option<Vec<(TopicConfig, Vec<TopicName>)>>,
         max_concurrent_uploads: Option<u64>,
+        target_file_size_b: Option<u64>,
     ) -> StateMachine<InMemoryFileRegistry> {
         let config = StateMachineConfiguration {
             max_active_file_timeout_ms: 1000,
             max_concurrent_uploads: max_concurrent_uploads.unwrap_or(3),
             max_uploads_retry: 3,
-            target_file_size_b: 128,
+            target_file_size_b: target_file_size_b.unwrap_or(128),
         };
 
         let default_input_topics = vec![(
@@ -550,16 +551,13 @@ mod test {
         use super::*;
 
         #[test]
-        fn test_process_records_for_different_stream() {}
-
-        #[test]
         fn test_process_records_for_same_stream() {
             // set-up
             let now = Instant::now();
 
             let payload = "{\"id\":15,\"event\":\"test\"}";
 
-            let mut sm = make_state_machine(None, None);
+            let mut sm = make_state_machine(None, None, None);
 
             let mut expected_stream_state = StreamState::new(now);
 
@@ -683,13 +681,109 @@ mod test {
         }
 
         #[test]
+        fn test_process_records_for_different_stream() {
+            // set-up
+            let now = Instant::now();
+
+            let first_payload = "{\"id\":15,\"event\":\"test\"}";
+
+            let second_payload = "{\"id\":15,\"event\":\"test\"}";
+
+            let mut sm = make_state_machine(None, None, None);
+
+            let mut first_expected_stream_state = StreamState::new(now);
+
+            let mut second_expected_stream_state = StreamState::new(now);
+
+            let mut expected_watermark = HashMap::new();
+
+            // first record
+            let topic_id = make_topic_id("topic-a", 0);
+
+            let record = make_record("topic-a", 0, 0, Some(first_payload));
+
+            let actual_responses: Vec<Response> = sm
+                .handle_inner(Request::ProcessRecord(record.clone()), || now)
+                .collect();
+
+            let metadata = sm.cache.get_or_create_record_metadata(&record).unwrap();
+
+            let actual_stream_state = sm.streams.get(&metadata.stream_id).unwrap().clone();
+
+            let first_expected_bytes_consumed = JsonSerializer::new()
+                .serialize(&record, &metadata.config.decoder)
+                .unwrap()
+                .unwrap()
+                .len() as u64;
+
+            first_expected_stream_state.bytes_consumed += first_expected_bytes_consumed;
+
+            first_expected_stream_state.records_consumed += 1;
+
+            first_expected_stream_state
+                .offsets_consumed
+                .insert(topic_id.clone(), vec![0]);
+
+            expected_watermark.insert(topic_id.clone(), 0);
+
+            assert_eq!(sm.streams.len(), 1);
+
+            assert_eq!(actual_responses, vec![Response::RecordConsumed]);
+
+            assert_eq!(actual_stream_state, first_expected_stream_state);
+
+            assert_eq!(sm.offsets_watermark, expected_watermark);
+
+            assert_eq!(sm.in_flight_uploads, 0);
+
+            // second record
+            let topic_id = make_topic_id("topic-b", 0);
+
+            let record = make_record("topic-b", 0, 0, Some(second_payload));
+
+            let actual_responses: Vec<Response> = sm
+                .handle_inner(Request::ProcessRecord(record.clone()), || now)
+                .collect();
+
+            let metadata = sm.cache.get_or_create_record_metadata(&record).unwrap();
+
+            let actual_stream_state = sm.streams.get(&metadata.stream_id).unwrap().clone();
+
+            let second_expected_bytes_consumed = JsonSerializer::new()
+                .serialize(&record, &metadata.config.decoder)
+                .unwrap()
+                .unwrap()
+                .len() as u64;
+
+            second_expected_stream_state.bytes_consumed += second_expected_bytes_consumed;
+
+            second_expected_stream_state.records_consumed += 1;
+
+            second_expected_stream_state
+                .offsets_consumed
+                .insert(topic_id.clone(), vec![0]);
+
+            expected_watermark.insert(topic_id.clone(), 0);
+
+            assert_eq!(sm.streams.len(), 2);
+
+            assert_eq!(actual_responses, vec![Response::RecordConsumed]);
+
+            assert_eq!(actual_stream_state, second_expected_stream_state);
+
+            assert_eq!(sm.offsets_watermark, expected_watermark);
+
+            assert_eq!(sm.in_flight_uploads, 0);
+        }
+
+        #[test]
         fn test_process_record_with_null_payload() {
             // set-up
             let now = Instant::now();
 
             let topic_id = make_topic_id("topic-a", 0);
 
-            let mut sm = make_state_machine(None, None);
+            let mut sm = make_state_machine(None, None, None);
 
             let mut expected_stream_state = StreamState::new(now);
 
@@ -729,7 +823,7 @@ mod test {
 
         #[test]
         fn test_process_record_with_missing_topic_config() {
-            let mut sm = make_state_machine(None, None);
+            let mut sm = make_state_machine(None, None, None);
 
             let record = make_record("missing-topic", 0, 0, None);
 
@@ -750,9 +844,167 @@ mod test {
 
             assert_eq!(sm.in_flight_uploads, 0);
         }
+
+        #[test]
+        fn test_in_flight_backpressure() {
+            // set-up
+            let now = Instant::now();
+
+            let payload = "{\"id\":15,\"event\":\"test\"}";
+
+            let mut sm = make_state_machine(None, None, Some(1));
+
+            let mut expected_stream_state = StreamState::new(now);
+
+            let mut expected_watermark = HashMap::new();
+
+            // set in_flight_uploads above max
+            sm.in_flight_uploads = sm.config.max_concurrent_uploads;
+
+            // first record
+            let topic_id = make_topic_id("topic-a", 0);
+
+            let record = make_record("topic-a", 0, 0, Some(payload));
+
+            let actual_responses: Vec<Response> = sm
+                .handle_inner(Request::ProcessRecord(record.clone()), || now)
+                .collect();
+
+            let metadata = sm.cache.get_or_create_record_metadata(&record).unwrap();
+
+            let actual_stream_state = sm.streams.get(&metadata.stream_id).unwrap().clone();
+
+            let expected_bytes_consumed = JsonSerializer::new()
+                .serialize(&record, &metadata.config.decoder)
+                .unwrap()
+                .unwrap()
+                .len() as u64;
+
+            expected_stream_state.bytes_consumed += expected_bytes_consumed;
+
+            expected_stream_state.records_consumed += 1;
+
+            expected_stream_state
+                .offsets_consumed
+                .insert(topic_id.clone(), vec![0]);
+
+            expected_watermark.insert(topic_id.clone(), 0);
+
+            assert_eq!(sm.streams.len(), 1);
+
+            assert_eq!(actual_responses, vec![Response::RecordConsumed]);
+
+            assert_eq!(actual_stream_state, expected_stream_state);
+
+            assert_eq!(sm.offsets_watermark, expected_watermark);
+
+            assert_eq!(sm.in_flight_uploads, sm.config.max_concurrent_uploads);
+        }
     }
 
-    mod upload_tick {}
+    mod upload_tick {
+        use super::*;
+        use rdkafka::message::BorrowedMessage;
+
+        #[test]
+        fn test_only_include_streams_before_or_on_cutoff() {
+            let now = Instant::now();
+
+            let mut sm = make_state_machine(None, None, None);
+
+            let cut_off = now - Duration::from_millis(sm.config.max_active_file_timeout_ms);
+
+            // stream before cutoff
+            let stream_before_id = StreamId(Rc::from("before"));
+
+            let mut stream_before = StreamState::new(cut_off - Duration::from_millis(1));
+
+            sm.file_registry
+                .write_all(stream_before_id.clone(), &vec![0; 1500])
+                .unwrap();
+
+            stream_before.bytes_consumed = 1500;
+            stream_before.records_consumed = 6;
+            stream_before
+                .offsets_consumed
+                .insert(make_topic_id("topic-a", 0), vec![0, 1, 2, 3, 4, 5]);
+
+            // stream at cutoff
+            let stream_at_id = StreamId(Rc::from("at"));
+
+            let mut stream_at = StreamState::new(cut_off);
+
+            sm.file_registry
+                .write_all(stream_at_id.clone(), &vec![0; 10])
+                .unwrap();
+
+            stream_at.bytes_consumed = 10;
+            stream_at.records_consumed = 1;
+            stream_at
+                .offsets_consumed
+                .insert(make_topic_id("topic-b", 1), vec![50]);
+
+            // stream after cutoff
+            let stream_after_id = StreamId(Rc::from("after"));
+
+            let mut stream_after = StreamState::new(now);
+
+            sm.file_registry
+                .write_all(stream_after_id.clone(), &vec![0; 200])
+                .unwrap();
+
+            stream_after.bytes_consumed = 200;
+            stream_after.records_consumed = 3;
+            stream_after
+                .offsets_consumed
+                .insert(make_topic_id("topic-c", 2), vec![100, 101, 102]);
+
+            // build expected responses
+            let expected_responses = vec![
+                Response::FileToUpload {
+                    stream_id: stream_before_id.clone(),
+                    sealed_file: SealedFile::new(
+                        "in-memory".into(),
+                        1500,
+                        1500,
+                        6,
+                        stream_before.offsets_consumed.clone(),
+                        stream_before.created_at,
+                    ),
+                    max_uploads_retry: 3,
+                },
+                Response::FileToUpload {
+                    stream_id: stream_at_id.clone(),
+                    sealed_file: SealedFile::new(
+                        "in-memory".into(),
+                        10,
+                        10,
+                        1,
+                        stream_at.offsets_consumed.clone(),
+                        stream_at.created_at,
+                    ),
+                    max_uploads_retry: 3,
+                },
+            ];
+
+            // insert test streams in StateMachine
+            sm.streams.insert(stream_before_id, stream_before);
+            sm.streams.insert(stream_at_id, stream_at);
+            sm.streams
+                .insert(stream_after_id.clone(), stream_after.clone());
+
+            let actual_responses: Vec<Response> = sm
+                .handle_inner::<BorrowedMessage>(Request::UploadTick, || now)
+                .collect();
+
+            // stream_before and stream_at have been closed and uploaded
+            assert_eq!(actual_responses, expected_responses);
+
+            assert_eq!(sm.streams.len(), 1);
+
+            assert_eq!(*sm.streams.get(&stream_after_id).unwrap(), stream_after);
+        }
+    }
 
     mod commit_tick {}
 

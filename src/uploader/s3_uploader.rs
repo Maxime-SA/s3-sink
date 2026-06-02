@@ -141,6 +141,7 @@ impl Uploader for S3Upload {
     }
 }
 
+#[cfg(test)]
 mod test {
     use super::*;
     use chrono::TimeZone;

@@ -65,7 +65,6 @@ impl ActiveFile {
         self.writer.flush()?;
         self.writer.do_finish()?;
         self.writer.get_mut().flush()?;
-
         Ok((self.path, self.writer.get_ref().compressed_size_b))
     }
 }
@@ -120,5 +119,42 @@ mod test {
         writer.write_all(b"12345").unwrap();
 
         assert_eq!(writer.compressed_size_b, 5);
+    }
+
+    #[test]
+    fn test_multiple_writes_concatenate() {
+        let dir = TempDir::new().unwrap();
+
+        let mut file = ActiveFile::new(dir.path(), 3).unwrap();
+
+        file.write_all(b"first\n").unwrap();
+        file.write_all(b"second\n").unwrap();
+        file.write_all(b"third\n").unwrap();
+
+        let (path, _) = file.close().unwrap();
+
+        let compressed = fs::read(path).unwrap();
+
+        let decompressed = zstd::decode_all(compressed.as_slice()).unwrap();
+
+        assert_eq!(decompressed, b"first\nsecond\nthird\n");
+    }
+
+    #[test]
+    fn test_close_without_writes() {
+        let dir = TempDir::new().unwrap();
+
+        let file = ActiveFile::new(dir.path(), 3).unwrap();
+
+        let (path, compressed_size_b) = file.close().unwrap();
+
+        // valid zstd frame with no content
+        let compressed = fs::read(path).unwrap();
+
+        let decompressed = zstd::decode_all(compressed.as_slice()).unwrap();
+
+        assert!(decompressed.is_empty());
+
+        assert!(compressed_size_b > 0); // zstd frame header/footer
     }
 }

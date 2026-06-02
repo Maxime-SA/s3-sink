@@ -76,4 +76,36 @@ mod test {
             None
         );
     }
+
+    #[test]
+    fn test_json_schema_decoder_empty_payload() {
+        let payload: &[u8] = &[];
+
+        assert_eq!(RecordDecoder::JsonSchemaDecoder.data_payload(payload), None);
+    }
+
+    #[test]
+    fn test_json_schema_decoder_header_only_no_data() {
+        let payload = &[0x00, 0x00, 0x00, 0x00, 0x00];
+
+        let result = RecordDecoder::JsonSchemaDecoder
+            .data_payload(payload)
+            .unwrap();
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_json_schema_decoder_wrong_magic_byte() {
+        let payload = &[0x01, 0x00, 0x00, 0x00, 0x00, b'{', b'}'];
+
+        assert_eq!(RecordDecoder::JsonSchemaDecoder.data_payload(payload), None);
+    }
+
+    #[test]
+    fn test_json_schema_decoder_too_short() {
+        let payload = &[0x00, 0x01, 0x02];
+
+        assert_eq!(RecordDecoder::JsonSchemaDecoder.data_payload(payload), None);
+    }
 }
