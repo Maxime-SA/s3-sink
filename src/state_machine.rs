@@ -6,7 +6,7 @@ use crate::{
     error::SinkError,
     json_serializer::JsonSerializer,
 };
-use rdkafka::{Message, TopicPartitionList, message::BorrowedMessage};
+use rdkafka::{Message, TopicPartitionList};
 use std::{
     borrow::Borrow,
     collections::{BTreeSet, HashMap},
@@ -16,27 +16,28 @@ use std::{
 };
 use tracing::error;
 
+#[derive(PartialEq, Debug, Clone)]
 struct StreamState {
     bytes_consumed: u64,
     records_consumed: u64,
     offsets_consumed: HashMap<TopicId, Vec<i64>>,
     created_at: Instant,
 }
-impl Default for StreamState {
-    fn default() -> Self {
+impl StreamState {
+    fn new(now: Instant) -> Self {
         StreamState {
             bytes_consumed: 0,
             records_consumed: 0,
             offsets_consumed: HashMap::new(),
-            created_at: Instant::now(),
+            created_at: now,
         }
     }
 }
 
-pub enum Request<'a, 'b> {
+pub enum Request<'a, M: Message> {
     ProcessRecord {
-        record: BorrowedMessage<'a>,
-        serializer: &'b mut JsonSerializer,
+        record: M,
+        serializer: &'a mut JsonSerializer,
     },
     UploadTick,
     CommitTick(TopicPartitionList),
@@ -47,6 +48,7 @@ pub enum Request<'a, 'b> {
     ShutdownSignal,
 }
 
+#[derive(PartialEq, Debug)]
 pub enum Response {
     WriteFile(StreamId),
     SealAndUpload {
@@ -109,15 +111,23 @@ impl StateMachine {
         }
     }
 
-    pub fn handle(&mut self, request: Request) -> std::vec::Drain<'_, Response> {
+    pub fn handle<M: Message>(&mut self, request: Request<'_, M>) -> std::vec::Drain<'_, Response> {
+        self.handle_inner(request, || Instant::now())
+    }
+
+    fn handle_inner<M: Message>(
+        &mut self,
+        request: Request<'_, M>,
+        now: impl Fn() -> Instant,
+    ) -> std::vec::Drain<'_, Response> {
         self.responses.clear();
 
         match request {
             Request::ProcessRecord { record, serializer } => {
-                self.handle_process_record(record, serializer)
+                self.handle_process_record(record, serializer, now())
             }
             Request::CommitTick(current_assignment) => self.handle_commit_tick(current_assignment),
-            Request::UploadTick => self.handle_upload_tick(),
+            Request::UploadTick => self.handle_upload_tick(now()),
             Request::UploadCompletion(upload_result) => {
                 self.handle_upload_completion(upload_result)
             }
@@ -155,7 +165,12 @@ impl StateMachine {
         self.responses.push(Response::DrainAndShutdown);
     }
 
-    fn handle_process_record<M: Message>(&mut self, record: M, serializer: &mut JsonSerializer) {
+    fn handle_process_record<M: Message>(
+        &mut self,
+        record: M,
+        serializer: &mut JsonSerializer,
+        now: Instant,
+    ) {
         let Some(metadata) = self.cache.get_or_create_record_metadata(&record) else {
             let err = SinkError::Configuration(format!(
                 "missing topic configuration for '{}'",
@@ -169,7 +184,10 @@ impl StateMachine {
         let record_offset = record.offset();
 
         // get or create stream state
-        let stream_state = self.streams.entry(metadata.stream_id.clone()).or_default();
+        let stream_state = self
+            .streams
+            .entry(metadata.stream_id.clone())
+            .or_insert_with(|| StreamState::new(now));
 
         // add consumed offset
         stream_state
@@ -235,9 +253,8 @@ impl StateMachine {
         }
     }
 
-    fn handle_upload_tick(&mut self) {
-        let cut_off =
-            Instant::now() - Duration::from_millis(self.config.max_active_file_timeout_ms);
+    fn handle_upload_tick(&mut self, now: Instant) {
+        let cut_off = now - Duration::from_millis(self.config.max_active_file_timeout_ms);
 
         for (id, state) in self
             .streams
@@ -363,8 +380,307 @@ impl StateMachine {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::{
+        RecordDecoder, RouterStrategy,
+        test_utils::{make_owned_headers, make_owned_message},
+    };
+    use rdkafka::message::OwnedMessage;
 
-    mod process_record {}
+    fn make_state_machine(
+        input_topics: Option<Vec<(TopicConfig, Vec<TopicName>)>>,
+        max_concurrent_uploads: Option<u64>,
+    ) -> StateMachine {
+        let config = StateMachineConfiguration {
+            max_active_file_timeout_ms: 1000,
+            max_concurrent_uploads: max_concurrent_uploads.unwrap_or(3),
+            max_uploads_retry: 3,
+            target_file_size_b: 128,
+        };
+
+        let default_input_topics = vec![(
+            TopicConfig {
+                decoder: RecordDecoder::JsonSchemaDecoder,
+                router: RouterStrategy::TopicVersion,
+            },
+            vec![
+                TopicName(Rc::from("topic-a")),
+                TopicName(Rc::from("topic-b")),
+                TopicName(Rc::from("topic-c")),
+            ],
+        )];
+
+        StateMachine::new(&input_topics.unwrap_or(default_input_topics), config)
+    }
+
+    fn make_record(
+        topic: &str,
+        partition: i32,
+        offset: i64,
+        data_opt: Option<&str>,
+    ) -> OwnedMessage {
+        let payload = data_opt.map(|data| {
+            let mut result = vec![];
+            // magic bytes
+            result.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00]);
+            // data bytes
+            result.extend_from_slice(data.as_bytes());
+            result
+        });
+
+        let headers = make_owned_headers(vec![
+            ("schema_name".into(), topic.into()),
+            ("schema_version".into(), "1.0.0".into()),
+        ]);
+
+        make_owned_message(
+            Some(topic),
+            payload,
+            Some(headers),
+            Some(partition),
+            Some(offset),
+        )
+    }
+
+    fn make_topic_id(topic_name: &str, partition: i32) -> TopicId {
+        TopicId(TopicName(Rc::from(topic_name)), partition)
+    }
+
+    mod process_record {
+        use super::*;
+
+        #[test]
+        fn test_process_records_for_same_stream() {
+            // set-up
+            let now = Instant::now();
+
+            let serializer = &mut JsonSerializer::new();
+
+            let payload = "{\"id\":15,\"event\":\"test\"}";
+
+            let mut sm = make_state_machine(None, None);
+
+            let mut expected_stream_state = StreamState::new(now);
+
+            let mut expected_watermark = HashMap::new();
+
+            // first record
+            let topic_id = make_topic_id("topic-a", 0);
+
+            let record = make_record("topic-a", 0, 0, Some(payload));
+
+            let actual_responses: Vec<Response> = sm
+                .handle_inner(
+                    Request::ProcessRecord {
+                        record: record.clone(),
+                        serializer,
+                    },
+                    || now,
+                )
+                .collect();
+
+            let metadata = sm.cache.get_or_create_record_metadata(&record).unwrap();
+
+            let actual_stream_state = sm.streams.get(&metadata.stream_id).unwrap().clone();
+
+            let expected_bytes_consumed = serializer
+                .serialize(&record, &metadata.config.decoder)
+                .unwrap()
+                .unwrap()
+                .len() as u64;
+
+            expected_stream_state.bytes_consumed += expected_bytes_consumed;
+
+            expected_stream_state.records_consumed += 1;
+
+            expected_stream_state
+                .offsets_consumed
+                .insert(topic_id.clone(), vec![0]);
+
+            expected_watermark.insert(topic_id.clone(), 0);
+
+            assert_eq!(sm.streams.len(), 1);
+
+            assert_eq!(
+                actual_responses,
+                vec![Response::WriteFile(metadata.stream_id.clone())]
+            );
+
+            assert_eq!(actual_stream_state, expected_stream_state);
+
+            assert_eq!(sm.offsets_watermark, expected_watermark);
+
+            assert_eq!(sm.in_flight_uploads, 0);
+
+            // second record - same partition
+            let record = make_record("topic-a", 0, 1, Some(payload));
+
+            let actual_responses: Vec<Response> = sm
+                .handle_inner(
+                    Request::ProcessRecord {
+                        record: record.clone(),
+                        serializer,
+                    },
+                    || now,
+                )
+                .collect();
+
+            expected_stream_state.bytes_consumed += expected_bytes_consumed;
+
+            expected_stream_state.records_consumed += 1;
+
+            expected_stream_state
+                .offsets_consumed
+                .entry(topic_id.clone())
+                .or_default()
+                .push(1);
+
+            assert_eq!(
+                actual_responses,
+                vec![
+                    Response::WriteFile(metadata.stream_id.clone()),
+                    Response::SealAndUpload {
+                        id: metadata.stream_id.clone(),
+                        bytes_consumed: expected_bytes_consumed * 2,
+                        records_consumed: 2,
+                        offsets_consumed: expected_stream_state.offsets_consumed.clone(),
+                        created_at: now,
+                        retries: 3
+                    }
+                ]
+            );
+
+            assert_eq!(sm.offsets_watermark, expected_watermark);
+
+            assert_eq!(sm.in_flight_uploads, 1);
+
+            // sealing and uploading removes the stream state
+            expected_stream_state.offsets_consumed.remove(&topic_id);
+            assert_eq!(sm.streams.len(), 0);
+
+            // third record - different partition
+            let record = make_record("topic-a", 1, 0, Some(payload));
+
+            let topic_id = make_topic_id("topic-a", 1);
+
+            let actual_responses: Vec<Response> = sm
+                .handle_inner(
+                    Request::ProcessRecord {
+                        record: record.clone(),
+                        serializer,
+                    },
+                    || now,
+                )
+                .collect();
+
+            let actual_stream_state = sm.streams.get(&metadata.stream_id).unwrap().clone();
+
+            expected_stream_state.bytes_consumed = expected_bytes_consumed;
+
+            expected_stream_state.records_consumed = 1;
+
+            expected_stream_state
+                .offsets_consumed
+                .entry(topic_id.clone())
+                .or_default()
+                .push(0);
+
+            expected_watermark.insert(topic_id.clone(), 0);
+
+            assert_eq!(sm.streams.len(), 1);
+
+            assert_eq!(
+                actual_responses,
+                vec![Response::WriteFile(metadata.stream_id.clone())]
+            );
+
+            assert_eq!(sm.offsets_watermark, expected_watermark);
+
+            assert_eq!(actual_stream_state, expected_stream_state);
+
+            assert_eq!(sm.in_flight_uploads, 1);
+        }
+
+        #[test]
+        fn test_process_record_with_null_payload() {
+            // set-up
+            let now = Instant::now();
+
+            let topic_id = make_topic_id("topic-a", 0);
+
+            let mut sm = make_state_machine(None, None);
+
+            let mut expected_stream_state = StreamState::new(now);
+
+            let mut expected_watermark = HashMap::new();
+
+            // process record
+            let record = make_record("topic-a", 0, 0, None);
+
+            let actual_responses: Vec<Response> = sm
+                .handle_inner(
+                    Request::ProcessRecord {
+                        record: record.clone(),
+                        serializer: &mut JsonSerializer::new(),
+                    },
+                    || now,
+                )
+                .collect();
+
+            let metadata = sm.cache.get_or_create_record_metadata(&record).unwrap();
+
+            let actual_stream_state = sm.streams.get(&metadata.stream_id).unwrap().clone();
+
+            expected_stream_state.bytes_consumed = 0;
+
+            expected_stream_state.records_consumed += 1;
+
+            expected_stream_state
+                .offsets_consumed
+                .insert(topic_id.clone(), vec![0]);
+
+            expected_watermark.insert(topic_id.clone(), 0);
+
+            assert_eq!(sm.streams.len(), 1);
+
+            assert_eq!(actual_responses, vec![]);
+
+            assert_eq!(actual_stream_state, expected_stream_state);
+
+            assert_eq!(sm.offsets_watermark, expected_watermark);
+
+            assert_eq!(sm.in_flight_uploads, 0);
+        }
+
+        #[test]
+        fn test_process_record_with_missing_topic_config() {
+            let mut sm = make_state_machine(None, None);
+
+            let record = make_record("missing-topic", 0, 0, None);
+
+            let actual_responses: Vec<Response> = sm
+                .handle_inner(
+                    Request::ProcessRecord {
+                        record: record.clone(),
+                        serializer: &mut JsonSerializer::new(),
+                    },
+                    || Instant::now(),
+                )
+                .collect();
+
+            assert_eq!(sm.streams.len(), 0);
+
+            assert_eq!(
+                actual_responses,
+                vec![Response::Fatal(SinkError::Configuration(
+                    "missing topic configuration for 'missing-topic'".into()
+                ))]
+            );
+
+            assert_eq!(sm.offsets_watermark, HashMap::new());
+
+            assert_eq!(sm.in_flight_uploads, 0);
+        }
+    }
 
     mod upload_tick {}
 

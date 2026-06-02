@@ -100,7 +100,7 @@ mod test {
         payload.extend_from_slice(b"{\"event\":{},\"product\":{\"id\":1}}");
 
         let headers = make_default_owned_headers();
-        let message = make_owned_message(None, Some(payload.to_vec()), Some(headers));
+        let message = make_owned_message(None, Some(payload.to_vec()), Some(headers), None, None);
 
         let actual_result = String::from_utf8(
             serializer
@@ -126,7 +126,7 @@ mod test {
         payload.extend_from_slice(b"\"random-string\"");
 
         let headers = make_default_owned_headers();
-        let message = make_owned_message(None, Some(payload.to_vec()), Some(headers));
+        let message = make_owned_message(None, Some(payload.to_vec()), Some(headers), None, None);
 
         let actual_result = String::from_utf8(
             serializer
@@ -151,7 +151,7 @@ mod test {
         let mut payload = vec![];
         payload.extend_from_slice(b"\"random-string\"");
 
-        let message = make_owned_message(None, Some(payload.to_vec()), None);
+        let message = make_owned_message(None, Some(payload.to_vec()), None, None, None);
 
         let actual_result = String::from_utf8(
             serializer
@@ -172,7 +172,7 @@ mod test {
         let mut serializer = JsonSerializer::new();
 
         let headers = make_default_owned_headers();
-        let message = make_owned_message(None, None, Some(headers));
+        let message = make_owned_message(None, None, Some(headers), None, None);
 
         let actual_result = serializer
             .serialize(&message, &RecordDecoder::JsonStringDecoder)
@@ -192,7 +192,7 @@ mod test {
         payload.extend_from_slice(b"{\"data\": 4}");
 
         let headers = make_default_owned_headers();
-        let message = make_owned_message(None, Some(payload.to_vec()), Some(headers));
+        let message = make_owned_message(None, Some(payload.to_vec()), Some(headers), None, None);
 
         let actual_result = serializer
             .serialize(&message, &RecordDecoder::JsonSchemaDecoder)

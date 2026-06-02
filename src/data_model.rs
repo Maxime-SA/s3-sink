@@ -33,7 +33,7 @@ impl Borrow<str> for TopicName {
     }
 }
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Eq, Hash, PartialEq, Debug, Clone)]
 pub struct TopicId(pub TopicName, pub i32); // (topic name, partition)
 
 #[derive(PartialEq, Debug)]

@@ -11,6 +11,7 @@ use crate::{BoxFuture, Result, S3Upload, SinkConfig};
 use futures::stream::{FuturesUnordered, StreamExt};
 use rdkafka::TopicPartitionList;
 use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
+use rdkafka::message::BorrowedMessage;
 use std::fs;
 use tokio::select;
 use tokio::signal::unix::SignalKind;
@@ -197,7 +198,9 @@ impl Sink {
 
         // does not retry failed uploads during shutdown phase - should we?
         while let Some(upload_result) = upload_pool.next().await {
-            for response in state_machine.handle(Request::UploadCompletion(upload_result)) {
+            for response in
+                state_machine.handle::<BorrowedMessage>(Request::UploadCompletion(upload_result))
+            {
                 match response {
                     Response::Fatal(sink_error) => Self::handle_fatal_error(sink_error)?,
                     _ => (),
@@ -205,7 +208,9 @@ impl Sink {
             }
         }
 
-        for response in state_machine.handle(Request::FinalCommit(consumer.assignment()?)) {
+        for response in
+            state_machine.handle::<BorrowedMessage>(Request::FinalCommit(consumer.assignment()?))
+        {
             match response {
                 Response::CommitSync(tpl) => {
                     Self::handle_commit(&tpl, &consumer, CommitMode::Sync)?
@@ -223,7 +228,8 @@ impl Sink {
         state_machine: &mut StateMachine,
     ) -> Result<()> {
         while let Ok(partitions_assigned) = rx.try_recv() {
-            let _ = state_machine.handle(Request::PartitionsAssigned(partitions_assigned));
+            let _ = state_machine
+                .handle::<BorrowedMessage>(Request::PartitionsAssigned(partitions_assigned));
         }
         Ok(())
     }

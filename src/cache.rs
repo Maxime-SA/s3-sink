@@ -137,7 +137,7 @@ mod test {
             vec![topic_name.clone()],
         )];
 
-        let message = make_owned_message(Some("topic-a"), None, None);
+        let message = make_owned_message(Some("topic-a"), None, None, None, None);
 
         let mut buf = String::new();
         RouterStrategy::TopicVersion.write_id(&message, &mut buf);
@@ -155,7 +155,7 @@ mod test {
     fn get_or_create_record_metadata_without_topic_config() {
         let input_topics = vec![];
 
-        let message = make_owned_message(Some("topic-a"), None, None);
+        let message = make_owned_message(Some("topic-a"), None, None, None, None);
 
         let mut cache = Cache::new(&input_topics);
 

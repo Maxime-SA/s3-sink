@@ -4,14 +4,16 @@ pub fn make_owned_message(
     topic: Option<&str>,
     payload: Option<Vec<u8>>,
     headers: Option<OwnedHeaders>,
+    partition: Option<i32>,
+    offset: Option<i64>,
 ) -> OwnedMessage {
     OwnedMessage::new(
         payload,
         None,
         String::from(topic.unwrap_or("topic")),
         rdkafka::Timestamp::NotAvailable,
-        0,
-        0,
+        partition.unwrap_or(0),
+        offset.unwrap_or(0),
         headers,
     )
 }

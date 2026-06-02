@@ -80,7 +80,7 @@ mod test {
 
     #[test]
     fn test_get_header_when_present() {
-        let record = make_owned_message(None, None, Some(make_default_owned_headers()));
+        let record = make_owned_message(None, None, Some(make_default_owned_headers()), None, None);
 
         let first_actual_result = RouterStrategy::get_header(&record, "header-A").unwrap();
         let second_actual_result = RouterStrategy::get_header(&record, "header-B").unwrap();
@@ -91,7 +91,7 @@ mod test {
 
     #[test]
     fn test_get_header_when_absent() {
-        let record = make_owned_message(None, None, None);
+        let record = make_owned_message(None, None, None, None, None);
 
         let first_actual_result = RouterStrategy::get_header(&record, "header-B");
 
@@ -107,7 +107,7 @@ mod test {
             ("schema_version".into(), "1.0.0".into()),
         ];
 
-        let message = make_owned_message(None, None, Some(make_owned_headers(headers)));
+        let message = make_owned_message(None, None, Some(make_owned_headers(headers)), None, None);
 
         RouterStrategy::TopicVersion.write_id(&message, &mut buf);
 
@@ -124,7 +124,13 @@ mod test {
             ("status_code".into(), "400".into()),
         ];
 
-        let message = make_owned_message(Some("dlq"), None, Some(make_owned_headers(headers)));
+        let message = make_owned_message(
+            Some("dlq"),
+            None,
+            Some(make_owned_headers(headers)),
+            None,
+            None,
+        );
 
         RouterStrategy::Dlq.write_id(&message, &mut buf);
 
@@ -138,7 +144,7 @@ mod test {
     fn test_write_id_topic_version_unknown() {
         let mut buf = String::new();
 
-        let message = make_owned_message(None, None, None);
+        let message = make_owned_message(None, None, None, None, None);
 
         RouterStrategy::TopicVersion.write_id(&message, &mut buf);
 
@@ -152,7 +158,7 @@ mod test {
     fn test_write_id_dlq_unknown() {
         let mut buf = String::new();
 
-        let message = make_owned_message(Some("dlq"), None, None);
+        let message = make_owned_message(Some("dlq"), None, None, None, None);
 
         RouterStrategy::Dlq.write_id(&message, &mut buf);
 
