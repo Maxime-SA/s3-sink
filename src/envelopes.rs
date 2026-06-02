@@ -119,21 +119,3 @@ impl SealedFile {
         self.created_at
     }
 }
-
-#[derive(PartialEq, Debug)]
-pub struct ClosedFile {
-    path: PathBuf,
-    compressed_size_b: u64,
-}
-impl ClosedFile {
-    pub fn new(path: PathBuf, compressed_size_b: u64) -> Self {
-        Self {
-            path,
-            compressed_size_b,
-        }
-    }
-
-    pub fn into_parts(self) -> (PathBuf, u64) {
-        (self.path, self.compressed_size_b)
-    }
-}

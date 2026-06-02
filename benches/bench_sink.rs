@@ -98,14 +98,14 @@ fn main() {
 
     std::fs::create_dir_all("/tmp/s3-sink-scratch").expect("failed to create scratch directory");
 
-    let config = get_bench_config();
-
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("could not build Tokio runtime");
 
     runtime.block_on(async {
+        let config = get_bench_config();
+
         let file_registry = DiskFileRegistry::new(
             &config.files.scratch_directory,
             config.files.compression_level,

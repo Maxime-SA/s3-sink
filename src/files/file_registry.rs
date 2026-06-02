@@ -1,7 +1,6 @@
 use crate::{
     Result,
     data_model::StreamId,
-    envelopes::ClosedFile,
     error::SinkError,
     files::{FileRegistry, file_io::ActiveFile},
 };
@@ -22,6 +21,7 @@ pub struct DiskFileRegistry {
     compression_level: i32,
     files: HashMap<StreamId, ActiveFile>,
 }
+
 impl DiskFileRegistry {
     pub fn new(directory: &Path, compression_level: i32) -> Self {
         DiskFileRegistry {
@@ -48,7 +48,7 @@ impl FileRegistry for DiskFileRegistry {
         file.write_all(bytes)
     }
 
-    fn close(&mut self, id: &StreamId) -> Result<ClosedFile> {
+    fn close(&mut self, id: &StreamId) -> Result<(PathBuf, u64)> {
         let file = self
             .files
             .remove(id)
@@ -153,7 +153,7 @@ mod test {
 
         registry.write_all(stream_id.clone(), input).unwrap();
 
-        let (path, compressed_size_b) = registry.close(&stream_id).unwrap().into_parts();
+        let (path, compressed_size_b) = registry.close(&stream_id).unwrap();
 
         assert_eq!(registry.active_file_count(), 0);
 

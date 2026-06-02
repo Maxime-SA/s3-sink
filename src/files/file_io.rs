@@ -1,4 +1,4 @@
-use crate::{Result, envelopes::ClosedFile};
+use crate::Result;
 use std::{
     fs::File,
     io::{BufWriter, Write},
@@ -12,7 +12,6 @@ Centralized point where writing to disk happens.
 
 There are two types:
 1. CountingWriter, a simple wrapper around a type which implements Write. We use this to track how many compressed bytes are written over the lifetime of a file.
-
 2. ActiveFile, takes care of the actual writing of bytes to disk.
 */
 
@@ -62,15 +61,12 @@ impl ActiveFile {
         Ok(())
     }
 
-    pub fn close(mut self) -> Result<ClosedFile> {
+    pub fn close(mut self) -> Result<(PathBuf, u64)> {
         self.writer.flush()?;
         self.writer.do_finish()?;
         self.writer.get_mut().flush()?;
 
-        Ok(ClosedFile::new(
-            self.path,
-            self.writer.get_ref().compressed_size_b,
-        ))
+        Ok((self.path, self.writer.get_ref().compressed_size_b))
     }
 }
 
@@ -90,7 +86,7 @@ mod test {
 
         file.write_all(input).unwrap();
 
-        let (path, compressed_size_b) = file.close().unwrap().into_parts();
+        let (path, compressed_size_b) = file.close().unwrap();
 
         assert!(compressed_size_b > 0);
 

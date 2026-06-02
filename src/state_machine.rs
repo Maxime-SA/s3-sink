@@ -6,6 +6,7 @@ use crate::{
     error::SinkError,
     files::FileRegistry,
     json_serializer::JsonSerializer,
+    stats::Stats,
 };
 use rdkafka::{Message, TopicPartitionList};
 use std::{
@@ -48,13 +49,11 @@ pub enum Request<M: Message> {
 
 #[derive(PartialEq, Debug)]
 pub enum Response {
-    RecordConsumed {
-        payload_size: u64,
-    },
+    RecordConsumed,
     FileToUpload {
         stream_id: StreamId,
         sealed_file: SealedFile,
-        retries: u64,
+        max_uploads_retry: u64,
     },
     RetryUpload(ToUpload),
     CommitAsync(TopicPartitionList),
@@ -96,6 +95,9 @@ pub struct StateMachine<F: FileRegistry> {
 
     // buf to prevent allocation on every record
     responses: Vec<Response>,
+
+    // metrics
+    stats: Stats,
 }
 
 impl<F: FileRegistry> StateMachine<F> {
@@ -114,6 +116,7 @@ impl<F: FileRegistry> StateMachine<F> {
             in_flight_uploads: 0,
             config,
             responses: Vec::with_capacity(16),
+            stats: Stats::new(),
         }
     }
 
@@ -130,16 +133,35 @@ impl<F: FileRegistry> StateMachine<F> {
 
         match request {
             Request::ProcessRecord(record) => self.handle_process_record(record, now()),
-            Request::CommitTick(current_assignment) => self.handle_commit_tick(current_assignment),
+            Request::CommitTick(current_assignment) => {
+                self.handle_commit_tick(current_assignment);
+
+                self.stats.print_report(
+                    self.file_registry.active_file_count(),
+                    self.in_flight_uploads,
+                );
+            }
             Request::UploadTick => self.handle_upload_tick(now()),
             Request::UploadCompletion(upload_result) => {
                 self.handle_upload_completion(upload_result)
             }
             Request::FinalCommit(current_assignment) => {
-                self.handle_final_commit(current_assignment)
+                self.handle_final_commit(current_assignment);
+
+                self.stats.print_report(
+                    self.file_registry.active_file_count(),
+                    self.in_flight_uploads,
+                );
             }
             Request::PartitionsAssigned(partitions) => self.handle_partitions_assigned(partitions),
-            Request::ShutdownSignal => self.handle_shutdown_signal(),
+            Request::ShutdownSignal => {
+                self.handle_shutdown_signal();
+
+                self.stats.print_report(
+                    self.file_registry.active_file_count(),
+                    self.in_flight_uploads,
+                );
+            }
         }
 
         self.responses.drain(..)
@@ -206,6 +228,8 @@ impl<F: FileRegistry> StateMachine<F> {
             Ok(Some(payload)) => {
                 let payload_size = payload.len() as u64;
 
+                self.stats.inc_bytes_consumed(payload_size);
+
                 // +X bytes consumed
                 stream_state.bytes_consumed += payload_size;
 
@@ -219,13 +243,14 @@ impl<F: FileRegistry> StateMachine<F> {
                 };
 
                 // record consumed
-                self.responses
-                    .push(Response::RecordConsumed { payload_size });
+                self.responses.push(Response::RecordConsumed);
 
                 // should seal and upload?
                 if stream_state.bytes_consumed >= self.config.target_file_size_b
                     && self.in_flight_uploads < self.config.max_concurrent_uploads
                 {
+                    self.stats.inc_files_sealed();
+
                     // remove stream state
                     let stream_state = self.streams.remove(&metadata.stream_id).unwrap();
 
@@ -265,6 +290,8 @@ impl<F: FileRegistry> StateMachine<F> {
         self.streams
             .extract_if(|_, state| state.created_at <= cut_off)
             .for_each(|(stream_id, stream_state)| {
+                self.stats.inc_files_sealed();
+
                 Self::close_and_upload(
                     stream_id,
                     stream_state,
@@ -282,6 +309,8 @@ impl<F: FileRegistry> StateMachine<F> {
             UploadResult::Failure(to_upload, sink_error) => {
                 error!("UploadResult::Failure: {:?}", sink_error);
 
+                self.stats.inc_failure_uploads();
+
                 let response = if to_upload.retries() > 0 {
                     Response::RetryUpload(to_upload.decrement())
                 } else {
@@ -293,6 +322,8 @@ impl<F: FileRegistry> StateMachine<F> {
                 self.responses.push(response);
             }
             UploadResult::Success(file_to_gc, offsets) => {
+                self.stats.inc_success_uploads();
+
                 // add offsets to uploaded tracker
                 for (topic_id, offsets) in offsets {
                     self.offsets_uploaded
@@ -318,7 +349,7 @@ impl<F: FileRegistry> StateMachine<F> {
         max_uploads_retry: u64,
     ) {
         let (path, compressed_size_b) = match file_registry.close(&stream_id) {
-            Ok(closed_file) => closed_file.into_parts(),
+            Ok(result) => result,
             Err(sink_error) => {
                 responses.push(Response::Fatal(sink_error));
                 return;
@@ -339,7 +370,7 @@ impl<F: FileRegistry> StateMachine<F> {
         responses.push(Response::FileToUpload {
             stream_id,
             sealed_file,
-            retries: max_uploads_retry,
+            max_uploads_retry,
         })
     }
 
@@ -419,7 +450,6 @@ mod test {
     use super::*;
     use crate::{
         RecordDecoder, RouterStrategy,
-        envelopes::ClosedFile,
         test_utils::{make_owned_headers, make_owned_message},
     };
     use rdkafka::message::OwnedMessage;
@@ -439,12 +469,12 @@ mod test {
             self.files.len() as u64
         }
 
-        fn close(&mut self, id: &StreamId) -> Result<ClosedFile> {
+        fn close(&mut self, id: &StreamId) -> Result<(PathBuf, u64)> {
             let file = self
                 .files
                 .remove(id)
                 .ok_or_else(|| SinkError::FileRegistry(format!("active file '{id}' not found")))?;
-            Ok(ClosedFile::new("in-memory".into(), file.len() as u64))
+            Ok(("in-memory".into(), file.len() as u64))
         }
 
         fn write_all(&mut self, id: StreamId, bytes: &[u8]) -> Result<()> {
@@ -563,12 +593,7 @@ mod test {
 
             assert_eq!(sm.streams.len(), 1);
 
-            assert_eq!(
-                actual_responses,
-                vec![Response::RecordConsumed {
-                    payload_size: expected_bytes_consumed
-                }]
-            );
+            assert_eq!(actual_responses, vec![Response::RecordConsumed]);
 
             assert_eq!(actual_stream_state, expected_stream_state);
 
@@ -596,9 +621,7 @@ mod test {
             assert_eq!(
                 actual_responses,
                 vec![
-                    Response::RecordConsumed {
-                        payload_size: expected_bytes_consumed
-                    },
+                    Response::RecordConsumed,
                     Response::FileToUpload {
                         stream_id: metadata.stream_id.clone(),
                         sealed_file: SealedFile::new(
@@ -609,7 +632,7 @@ mod test {
                             expected_stream_state.offsets_consumed.clone(),
                             now
                         ),
-                        retries: 3
+                        max_uploads_retry: 3
                     }
                 ]
             );
@@ -647,12 +670,7 @@ mod test {
 
             assert_eq!(sm.streams.len(), 1);
 
-            assert_eq!(
-                actual_responses,
-                vec![Response::RecordConsumed {
-                    payload_size: expected_bytes_consumed
-                }]
-            );
+            assert_eq!(actual_responses, vec![Response::RecordConsumed]);
 
             assert_eq!(sm.offsets_watermark, expected_watermark);
 

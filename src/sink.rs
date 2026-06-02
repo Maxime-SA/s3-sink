@@ -3,7 +3,6 @@ use crate::error::SinkError;
 use crate::files::FileRegistry;
 use crate::kafka_consumer::{CustomContext, init_kafka_consumer};
 use crate::state_machine::{Request, Response, StateMachine, StateMachineConfiguration};
-use crate::stats::Stats;
 use crate::timer_interrupts::TimerInterrupts;
 use crate::uploader::Uploader;
 use crate::{BoxFuture, Result, S3Upload, SinkConfig};
@@ -43,8 +42,11 @@ impl Sink {
         info!("initializing ShutdownHandler");
         let mut shutdown = std::pin::pin!(Self::shutdown_signal());
 
-        info!("initializing Stats");
-        let mut stats: Stats = Stats::new();
+        info!("initializing RebalanceChannel");
+        let (rebalance_tx, mut rebalance_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        info!("initializing StreamConsumer");
+        let consumer = init_kafka_consumer(&config.kafka, rebalance_tx)?;
 
         info!("initializing StateMachine");
         let state_machine_config = StateMachineConfiguration {
@@ -58,12 +60,6 @@ impl Sink {
             file_registry,
             state_machine_config,
         );
-
-        info!("initializing RebalanceChannel");
-        let (rebalance_tx, mut rebalance_rx) = tokio::sync::mpsc::unbounded_channel();
-
-        info!("initializing StreamConsumer");
-        let consumer = init_kafka_consumer(&config.kafka, rebalance_tx)?;
 
         'event_loop: loop {
             let request = select! {
@@ -94,7 +90,7 @@ impl Sink {
                 _ = &mut shutdown => Request::ShutdownSignal,
             };
 
-            // check rebalance assignment channel and process any rebalances
+            // process any pending rebalances
             while let Ok(partitions_assigned) = rebalance_rx.try_recv() {
                 let _ = state_machine
                     .handle::<BorrowedMessage>(Request::PartitionsAssigned(partitions_assigned));
@@ -102,34 +98,25 @@ impl Sink {
 
             for response in state_machine.handle(request) {
                 match response {
-                    Response::RecordConsumed { payload_size } => {
-                        stats.inc_bytes_consumed(payload_size);
-                    }
+                    Response::RecordConsumed => (),
 
                     Response::FileToUpload {
                         stream_id,
                         sealed_file,
-                        retries,
+                        max_uploads_retry,
                     } => {
-                        stats.inc_files_sealed();
-
                         let object_key = S3Upload::partition_spec(&stream_id);
 
-                        let to_upload = ToUpload::new(object_key, sealed_file, retries);
+                        let to_upload = ToUpload::new(object_key, sealed_file, max_uploads_retry);
 
                         upload_pool.push(uploader.upload(to_upload));
                     }
 
-                    // should we track how many retry there are in a given time slice and apply backpressure?
                     Response::RetryUpload(to_upload) => {
-                        stats.inc_failure_uploads();
-
-                        upload_pool.push(uploader.upload(to_upload));
+                        upload_pool.push(uploader.upload(to_upload))
                     }
 
                     Response::CommitAsync(tpl) => {
-                        stats.print_report(upload_pool.len() as u64);
-
                         Self::handle_commit(&tpl, &consumer, CommitMode::Async)?
                     }
 
@@ -138,8 +125,6 @@ impl Sink {
                     }
 
                     Response::DeleteFile(path_buf) => {
-                        stats.inc_success_uploads();
-
                         let _ = fs::remove_file(path_buf);
                     }
 
@@ -151,8 +136,6 @@ impl Sink {
         }
 
         Self::drain_and_shutdown(&consumer, &mut state_machine, &mut upload_pool).await?;
-
-        stats.print_report(upload_pool.len() as u64);
 
         Ok(())
     }
@@ -176,7 +159,6 @@ impl Sink {
     ) -> Result<()> {
         info!("draining upload pool and shutting down");
 
-        // does not retry failed uploads during shutdown phase - should we?
         while let Some(upload_result) = upload_pool.next().await {
             for response in
                 state_machine.handle::<BorrowedMessage>(Request::UploadCompletion(upload_result))

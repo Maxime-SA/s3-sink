@@ -1,7 +1,6 @@
-use std::rc::Rc;
-
 use aws_config::Region;
 use s3_sink::*;
+use std::rc::Rc;
 use tracing::{error, info};
 
 // # EC2 instance metadata
@@ -89,14 +88,15 @@ fn init_logging() {
 fn main() {
     init_logging();
 
-    let config = get_config();
-
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("could not build Tokio runtime");
 
     runtime.block_on(async {
+        info!("initializing SinkConfig");
+        let config = get_config();
+
         info!("initializing DiskFileRegistry");
         let file_registry = DiskFileRegistry::new(
             &config.files.scratch_directory,

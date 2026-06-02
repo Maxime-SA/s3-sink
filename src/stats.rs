@@ -42,8 +42,12 @@ impl Stats {
         }
     }
 
-    pub fn print_report(&mut self, in_flight_uploads: u64) {
-        info!(in_flight_uploads = in_flight_uploads, "snapshot stats");
+    pub fn print_report(&mut self, active_file_count: u64, in_flight_uploads: u64) {
+        info!(
+            active_files = active_file_count,
+            in_flight_uploads = in_flight_uploads,
+            "snapshot stats"
+        );
 
         // window calculations
         let since_last_tick = self.last_tick.elapsed().as_secs_f64();
