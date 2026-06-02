@@ -282,7 +282,7 @@ impl<F: FileRegistry> StateMachine<F> {
             UploadResult::Failure(to_upload, sink_error) => {
                 error!("UploadResult::Failure: {:?}", sink_error);
 
-                let cmd = if to_upload.retries() > 0 {
+                let response = if to_upload.retries() > 0 {
                     Response::RetryUpload(to_upload.decrement())
                 } else {
                     Response::Fatal(SinkError::S3Upload(
@@ -290,7 +290,7 @@ impl<F: FileRegistry> StateMachine<F> {
                     ))
                 };
 
-                self.responses.push(cmd);
+                self.responses.push(response);
             }
             UploadResult::Success(file_to_gc, offsets) => {
                 // add offsets to uploaded tracker

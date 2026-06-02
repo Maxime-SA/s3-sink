@@ -1,7 +1,6 @@
-use crate::envelopes::{SealedFile, ToUpload};
+use crate::envelopes::ToUpload;
 use crate::error::SinkError;
 use crate::files::FileRegistry;
-use crate::json_serializer::JsonSerializer;
 use crate::kafka_consumer::{CustomContext, init_kafka_consumer};
 use crate::state_machine::{Request, Response, StateMachine, StateMachineConfiguration};
 use crate::stats::Stats;
@@ -15,7 +14,6 @@ use rdkafka::message::BorrowedMessage;
 use std::fs;
 use tokio::select;
 use tokio::signal::unix::SignalKind;
-use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{error, info};
 
 /*
@@ -116,6 +114,7 @@ impl Sink {
                         stats.inc_files_sealed();
 
                         let object_key = S3Upload::partition_spec(&stream_id);
+
                         let to_upload = ToUpload::new(object_key, sealed_file, retries);
 
                         upload_pool.push(uploader.upload(to_upload));

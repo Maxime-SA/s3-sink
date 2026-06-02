@@ -1,4 +1,4 @@
-use crate::{data_model::TopicId, error::SinkError, files::ActiveFile};
+use crate::{data_model::TopicId, error::SinkError};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},

@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use aws_config::Region;
 use s3_sink::*;
 use tracing::{error, info};
 
@@ -90,20 +91,32 @@ fn main() {
 
     let config = get_config();
 
-    let mock_uploader = MockUploader; // just for testing
-
-    let file_registry = DiskFileRegistry::new(
-        &config.files.scratch_directory,
-        config.files.compression_level,
-    );
-
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("could not build Tokio runtime");
 
-    match runtime.block_on(Sink::start(&config, mock_uploader, file_registry)) {
-        Ok(_) => info!("sink event loop exited"),
-        Err(error) => error!("sink error: {:?}", error),
-    };
+    runtime.block_on(async {
+        info!("initializing DiskFileRegistry");
+        let file_registry = DiskFileRegistry::new(
+            &config.files.scratch_directory,
+            config.files.compression_level,
+        );
+
+        info!("initializing S3Upload");
+        let uploader = S3Upload::new(
+            Region::from_static("us-east-1"),
+            Some("http://localhost:9000"),
+            "sink-output".into(),
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        match Sink::start(&config, uploader, file_registry).await {
+            Ok(_) => info!("sink event loop exited"),
+            Err(error) => error!("sink error: {:?}", error),
+        }
+    });
 }

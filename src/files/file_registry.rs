@@ -49,17 +49,12 @@ impl FileRegistry for DiskFileRegistry {
     }
 
     fn close(&mut self, id: &StreamId) -> Result<ClosedFile> {
-        let mut file = self
+        let file = self
             .files
             .remove(id)
             .ok_or_else(|| SinkError::FileRegistry(format!("active file '{id}' not found")))?;
 
-        file.finalize()?;
-
-        let compressed_size_b = file.compressed_size_b();
-        let path = file.path();
-
-        Ok(ClosedFile::new(path, compressed_size_b))
+        Ok(file.close()?)
     }
 
     fn active_file_count(&self) -> u64 {
@@ -148,6 +143,22 @@ mod test {
 
     #[test]
     fn test_close_file() {
-        assert!(false)
+        let dir = TempDir::new().unwrap();
+
+        let mut registry = DiskFileRegistry::new(dir.path(), 3);
+
+        let stream_id = StreamId(Rc::from("test-stream"));
+
+        let input = b"first line\nsecond line\nthird line\n";
+
+        registry.write_all(stream_id.clone(), input).unwrap();
+
+        let (path, compressed_size_b) = registry.close(&stream_id).unwrap().into_parts();
+
+        assert_eq!(registry.active_file_count(), 0);
+
+        assert_eq!(path.parent().unwrap(), dir.path());
+
+        assert!(compressed_size_b > 0)
     }
 }

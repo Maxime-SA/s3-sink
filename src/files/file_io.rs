@@ -1,4 +1,4 @@
-use crate::Result;
+use crate::{Result, envelopes::ClosedFile};
 use std::{
     fs::File,
     io::{BufWriter, Write},
@@ -62,19 +62,15 @@ impl ActiveFile {
         Ok(())
     }
 
-    pub fn finalize(&mut self) -> Result<()> {
+    pub fn close(mut self) -> Result<ClosedFile> {
         self.writer.flush()?;
         self.writer.do_finish()?;
         self.writer.get_mut().flush()?;
-        Ok(())
-    }
 
-    pub fn compressed_size_b(&self) -> u64 {
-        self.writer.get_ref().compressed_size_b
-    }
-
-    pub fn path(self) -> PathBuf {
-        self.path
+        Ok(ClosedFile::new(
+            self.path,
+            self.writer.get_ref().compressed_size_b,
+        ))
     }
 }
 
@@ -85,7 +81,7 @@ mod test {
     use tempfile::TempDir;
 
     #[test]
-    fn test_write_and_finalize() {
+    fn test_write_and_close() {
         let dir = TempDir::new().unwrap();
 
         let mut file = ActiveFile::new(dir.path(), 3).unwrap();
@@ -93,11 +89,13 @@ mod test {
         let input = b"first line\nsecond line\nthird line\nfourth line\n";
 
         file.write_all(input).unwrap();
-        file.finalize().unwrap();
 
-        assert!(file.compressed_size_b() > 0);
+        let (path, compressed_size_b) = file.close().unwrap().into_parts();
 
-        let compressed = fs::read(file.path).unwrap();
+        assert!(compressed_size_b > 0);
+
+        let compressed = fs::read(path).unwrap();
+
         let decompressed = zstd::decode_all(compressed.as_slice()).unwrap();
 
         assert_eq!(decompressed, input);
@@ -109,9 +107,10 @@ mod test {
 
         let file = ActiveFile::new(dir.path(), 3).unwrap();
 
-        let path = file.path();
+        let path = file.path;
 
         assert!(path.exists());
+
         assert!(path.to_str().unwrap().ends_with("jsonl.zst"));
     }
 
