@@ -92,12 +92,17 @@ fn main() {
 
     let mock_uploader = MockUploader; // just for testing
 
+    let file_registry = DiskFileRegistry::new(
+        &config.files.scratch_directory,
+        config.files.compression_level,
+    );
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("could not build Tokio runtime");
 
-    match runtime.block_on(Sink::start(&config, mock_uploader)) {
+    match runtime.block_on(Sink::start(&config, mock_uploader, file_registry)) {
         Ok(_) => info!("sink event loop exited"),
         Err(error) => error!("sink error: {:?}", error),
     };

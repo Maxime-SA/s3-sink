@@ -106,6 +106,11 @@ fn main() {
         .expect("could not build Tokio runtime");
 
     runtime.block_on(async {
+        let file_registry = DiskFileRegistry::new(
+            &config.files.scratch_directory,
+            config.files.compression_level,
+        );
+
         let uploader = S3Upload::new(
             Region::from_static("us-east-1"),
             Some("http://localhost:9000"),
@@ -116,7 +121,7 @@ fn main() {
         )
         .await;
 
-        match Sink::start(&config, uploader).await {
+        match Sink::start(&config, uploader, file_registry).await {
             Ok(_) => info!("sink event loop exited"),
             Err(error) => error!("sink error: {:?}", error),
         }

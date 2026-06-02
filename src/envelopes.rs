@@ -82,15 +82,16 @@ pub struct SealedFile {
 }
 impl SealedFile {
     pub fn new(
-        file: ActiveFile,
+        path: PathBuf,
         raw_size_b: u64,
+        compressed_size_b: u64,
         record_count: u64,
         offsets_consumed: HashMap<TopicId, Vec<i64>>,
         created_at: Instant,
     ) -> Self {
         SealedFile {
-            compressed_size_b: file.compressed_size_b(),
-            path: file.path(),
+            path,
+            compressed_size_b,
             raw_size_b,
             record_count,
             offsets_consumed,
@@ -116,5 +117,23 @@ impl SealedFile {
 
     pub fn created_at(&self) -> Instant {
         self.created_at
+    }
+}
+
+#[derive(PartialEq, Debug)]
+pub struct ClosedFile {
+    path: PathBuf,
+    compressed_size_b: u64,
+}
+impl ClosedFile {
+    pub fn new(path: PathBuf, compressed_size_b: u64) -> Self {
+        Self {
+            path,
+            compressed_size_b,
+        }
+    }
+
+    pub fn into_parts(self) -> (PathBuf, u64) {
+        (self.path, self.compressed_size_b)
     }
 }

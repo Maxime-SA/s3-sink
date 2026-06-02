@@ -2,8 +2,9 @@ use crate::{
     Result, TopicConfig, TopicName,
     cache::Cache,
     data_model::{StreamId, TopicId},
-    envelopes::{ToUpload, UploadResult},
+    envelopes::{SealedFile, ToUpload, UploadResult},
     error::SinkError,
+    files::FileRegistry,
     json_serializer::JsonSerializer,
 };
 use rdkafka::{Message, TopicPartitionList};
@@ -34,11 +35,8 @@ impl StreamState {
     }
 }
 
-pub enum Request<'a, M: Message> {
-    ProcessRecord {
-        record: M,
-        serializer: &'a mut JsonSerializer,
-    },
+pub enum Request<M: Message> {
+    ProcessRecord(M),
     UploadTick,
     CommitTick(TopicPartitionList),
     // FairnessSchedulerTick,
@@ -50,13 +48,12 @@ pub enum Request<'a, M: Message> {
 
 #[derive(PartialEq, Debug)]
 pub enum Response {
-    WriteFile(StreamId),
-    SealAndUpload {
-        id: StreamId,
-        bytes_consumed: u64,
-        records_consumed: u64,
-        offsets_consumed: HashMap<TopicId, Vec<i64>>,
-        created_at: Instant,
+    RecordConsumed {
+        payload_size: u64,
+    },
+    FileToUpload {
+        stream_id: StreamId,
+        sealed_file: SealedFile,
         retries: u64,
     },
     RetryUpload(ToUpload),
@@ -74,9 +71,15 @@ pub struct StateMachineConfiguration {
     pub target_file_size_b: u64,
 }
 
-pub struct StateMachine {
+pub struct StateMachine<F: FileRegistry> {
     // memoization to prevent redundant allocations
     cache: Cache,
+
+    // file registry
+    file_registry: F,
+
+    // record serializer
+    serializer: JsonSerializer,
 
     // stream tracking
     streams: HashMap<StreamId, StreamState>,
@@ -95,13 +98,16 @@ pub struct StateMachine {
     responses: Vec<Response>,
 }
 
-impl StateMachine {
+impl<F: FileRegistry> StateMachine<F> {
     pub fn new(
         input_topics: &Vec<(TopicConfig, Vec<TopicName>)>,
+        file_registry: F,
         config: StateMachineConfiguration,
     ) -> Self {
         Self {
             cache: Cache::new(input_topics),
+            file_registry,
+            serializer: JsonSerializer::new(),
             streams: HashMap::new(),
             offsets_uploaded: HashMap::new(),
             offsets_watermark: HashMap::new(),
@@ -111,21 +117,19 @@ impl StateMachine {
         }
     }
 
-    pub fn handle<M: Message>(&mut self, request: Request<'_, M>) -> std::vec::Drain<'_, Response> {
+    pub fn handle<M: Message>(&mut self, request: Request<M>) -> std::vec::Drain<'_, Response> {
         self.handle_inner(request, || Instant::now())
     }
 
     fn handle_inner<M: Message>(
         &mut self,
-        request: Request<'_, M>,
+        request: Request<M>,
         now: impl Fn() -> Instant,
     ) -> std::vec::Drain<'_, Response> {
         self.responses.clear();
 
         match request {
-            Request::ProcessRecord { record, serializer } => {
-                self.handle_process_record(record, serializer, now())
-            }
+            Request::ProcessRecord(record) => self.handle_process_record(record, now()),
             Request::CommitTick(current_assignment) => self.handle_commit_tick(current_assignment),
             Request::UploadTick => self.handle_upload_tick(now()),
             Request::UploadCompletion(upload_result) => {
@@ -150,27 +154,21 @@ impl StateMachine {
     }
 
     fn handle_shutdown_signal(&mut self) {
-        for (id, state) in self.streams.drain() {
-            self.in_flight_uploads += 1;
+        self.streams.drain().for_each(|(stream_id, stream_state)| {
+            Self::close_and_upload(
+                stream_id,
+                stream_state,
+                &mut self.file_registry,
+                &mut self.responses,
+                &mut self.in_flight_uploads,
+                self.config.max_uploads_retry,
+            );
+        });
 
-            self.responses.push(Response::SealAndUpload {
-                id,
-                bytes_consumed: state.bytes_consumed,
-                records_consumed: state.records_consumed,
-                offsets_consumed: state.offsets_consumed,
-                created_at: state.created_at,
-                retries: self.config.max_uploads_retry,
-            })
-        }
         self.responses.push(Response::DrainAndShutdown);
     }
 
-    fn handle_process_record<M: Message>(
-        &mut self,
-        record: M,
-        serializer: &mut JsonSerializer,
-        now: Instant,
-    ) {
+    fn handle_process_record<M: Message>(&mut self, record: M, now: Instant) {
         let Some(metadata) = self.cache.get_or_create_record_metadata(&record) else {
             let err = SinkError::Configuration(format!(
                 "missing topic configuration for '{}'",
@@ -204,34 +202,42 @@ impl StateMachine {
         // +1 records consumed
         stream_state.records_consumed += 1;
 
-        match serializer.serialize(&record, &metadata.config.decoder) {
+        match self.serializer.serialize(&record, &metadata.config.decoder) {
             Ok(Some(payload)) => {
-                // +X bytes consumed
-                stream_state.bytes_consumed += payload.len() as u64;
+                let payload_size = payload.len() as u64;
 
-                // write to active file
+                // +X bytes consumed
+                stream_state.bytes_consumed += payload_size;
+
+                // write to file registry
+                if let Err(sink_error) = self
+                    .file_registry
+                    .write_all(metadata.stream_id.clone(), payload)
+                {
+                    self.responses.push(Response::Fatal(sink_error));
+                    return;
+                };
+
+                // record consumed
                 self.responses
-                    .push(Response::WriteFile(metadata.stream_id.clone()));
+                    .push(Response::RecordConsumed { payload_size });
 
                 // should seal and upload?
                 if stream_state.bytes_consumed >= self.config.target_file_size_b
                     && self.in_flight_uploads < self.config.max_concurrent_uploads
                 {
-                    // inc in_flight uploads
-                    self.in_flight_uploads += 1;
-
                     // remove stream state
                     let stream_state = self.streams.remove(&metadata.stream_id).unwrap();
 
-                    // seal and upload
-                    self.responses.push(Response::SealAndUpload {
-                        id: metadata.stream_id.clone(),
-                        bytes_consumed: stream_state.bytes_consumed,
-                        records_consumed: stream_state.records_consumed,
-                        offsets_consumed: stream_state.offsets_consumed,
-                        created_at: stream_state.created_at,
-                        retries: self.config.max_uploads_retry,
-                    });
+                    // close and upload
+                    Self::close_and_upload(
+                        metadata.stream_id,
+                        stream_state,
+                        &mut self.file_registry,
+                        &mut self.responses,
+                        &mut self.in_flight_uploads,
+                        self.config.max_uploads_retry,
+                    );
                 }
             }
             Ok(None) => (),
@@ -256,21 +262,18 @@ impl StateMachine {
     fn handle_upload_tick(&mut self, now: Instant) {
         let cut_off = now - Duration::from_millis(self.config.max_active_file_timeout_ms);
 
-        for (id, state) in self
-            .streams
+        self.streams
             .extract_if(|_, state| state.created_at <= cut_off)
-        {
-            self.in_flight_uploads += 1;
-
-            self.responses.push(Response::SealAndUpload {
-                id,
-                bytes_consumed: state.bytes_consumed,
-                records_consumed: state.records_consumed,
-                offsets_consumed: state.offsets_consumed,
-                created_at: state.created_at,
-                retries: self.config.max_uploads_retry,
+            .for_each(|(stream_id, stream_state)| {
+                Self::close_and_upload(
+                    stream_id,
+                    stream_state,
+                    &mut self.file_registry,
+                    &mut self.responses,
+                    &mut self.in_flight_uploads,
+                    self.config.max_uploads_retry,
+                );
             })
-        }
     }
 
     fn handle_upload_completion(&mut self, upload_result: UploadResult) {
@@ -304,6 +307,40 @@ impl StateMachine {
                 self.responses.push(Response::DeleteFile(file_to_gc));
             }
         }
+    }
+
+    fn close_and_upload(
+        stream_id: StreamId,
+        stream_state: StreamState,
+        file_registry: &mut F,
+        responses: &mut Vec<Response>,
+        in_flight_uploads: &mut u64,
+        max_uploads_retry: u64,
+    ) {
+        let (path, compressed_size_b) = match file_registry.close(&stream_id) {
+            Ok(closed_file) => closed_file.into_parts(),
+            Err(sink_error) => {
+                responses.push(Response::Fatal(sink_error));
+                return;
+            }
+        };
+
+        *in_flight_uploads += 1;
+
+        let sealed_file = SealedFile::new(
+            path,
+            stream_state.bytes_consumed,
+            compressed_size_b,
+            stream_state.records_consumed,
+            stream_state.offsets_consumed,
+            stream_state.created_at,
+        );
+
+        responses.push(Response::FileToUpload {
+            stream_id,
+            sealed_file,
+            retries: max_uploads_retry,
+        })
     }
 
     fn make_topic_partition_list(
@@ -382,14 +419,44 @@ mod test {
     use super::*;
     use crate::{
         RecordDecoder, RouterStrategy,
+        envelopes::ClosedFile,
         test_utils::{make_owned_headers, make_owned_message},
     };
     use rdkafka::message::OwnedMessage;
 
+    struct InMemoryFileRegistry {
+        files: HashMap<StreamId, Vec<u8>>,
+    }
+    impl InMemoryFileRegistry {
+        fn new() -> Self {
+            Self {
+                files: HashMap::new(),
+            }
+        }
+    }
+    impl FileRegistry for InMemoryFileRegistry {
+        fn active_file_count(&self) -> u64 {
+            self.files.len() as u64
+        }
+
+        fn close(&mut self, id: &StreamId) -> Result<ClosedFile> {
+            let file = self
+                .files
+                .remove(id)
+                .ok_or_else(|| SinkError::FileRegistry(format!("active file '{id}' not found")))?;
+            Ok(ClosedFile::new("in-memory".into(), file.len() as u64))
+        }
+
+        fn write_all(&mut self, id: StreamId, bytes: &[u8]) -> Result<()> {
+            self.files.entry(id).or_default().extend_from_slice(bytes);
+            Ok(())
+        }
+    }
+
     fn make_state_machine(
         input_topics: Option<Vec<(TopicConfig, Vec<TopicName>)>>,
         max_concurrent_uploads: Option<u64>,
-    ) -> StateMachine {
+    ) -> StateMachine<InMemoryFileRegistry> {
         let config = StateMachineConfiguration {
             max_active_file_timeout_ms: 1000,
             max_concurrent_uploads: max_concurrent_uploads.unwrap_or(3),
@@ -409,7 +476,11 @@ mod test {
             ],
         )];
 
-        StateMachine::new(&input_topics.unwrap_or(default_input_topics), config)
+        StateMachine::new(
+            &input_topics.unwrap_or(default_input_topics),
+            InMemoryFileRegistry::new(),
+            config,
+        )
     }
 
     fn make_record(
@@ -453,8 +524,6 @@ mod test {
             // set-up
             let now = Instant::now();
 
-            let serializer = &mut JsonSerializer::new();
-
             let payload = "{\"id\":15,\"event\":\"test\"}";
 
             let mut sm = make_state_machine(None, None);
@@ -469,20 +538,14 @@ mod test {
             let record = make_record("topic-a", 0, 0, Some(payload));
 
             let actual_responses: Vec<Response> = sm
-                .handle_inner(
-                    Request::ProcessRecord {
-                        record: record.clone(),
-                        serializer,
-                    },
-                    || now,
-                )
+                .handle_inner(Request::ProcessRecord(record.clone()), || now)
                 .collect();
 
             let metadata = sm.cache.get_or_create_record_metadata(&record).unwrap();
 
             let actual_stream_state = sm.streams.get(&metadata.stream_id).unwrap().clone();
 
-            let expected_bytes_consumed = serializer
+            let expected_bytes_consumed = JsonSerializer::new()
                 .serialize(&record, &metadata.config.decoder)
                 .unwrap()
                 .unwrap()
@@ -502,7 +565,9 @@ mod test {
 
             assert_eq!(
                 actual_responses,
-                vec![Response::WriteFile(metadata.stream_id.clone())]
+                vec![Response::RecordConsumed {
+                    payload_size: expected_bytes_consumed
+                }]
             );
 
             assert_eq!(actual_stream_state, expected_stream_state);
@@ -515,13 +580,7 @@ mod test {
             let record = make_record("topic-a", 0, 1, Some(payload));
 
             let actual_responses: Vec<Response> = sm
-                .handle_inner(
-                    Request::ProcessRecord {
-                        record: record.clone(),
-                        serializer,
-                    },
-                    || now,
-                )
+                .handle_inner(Request::ProcessRecord(record.clone()), || now)
                 .collect();
 
             expected_stream_state.bytes_consumed += expected_bytes_consumed;
@@ -537,13 +596,19 @@ mod test {
             assert_eq!(
                 actual_responses,
                 vec![
-                    Response::WriteFile(metadata.stream_id.clone()),
-                    Response::SealAndUpload {
-                        id: metadata.stream_id.clone(),
-                        bytes_consumed: expected_bytes_consumed * 2,
-                        records_consumed: 2,
-                        offsets_consumed: expected_stream_state.offsets_consumed.clone(),
-                        created_at: now,
+                    Response::RecordConsumed {
+                        payload_size: expected_bytes_consumed
+                    },
+                    Response::FileToUpload {
+                        stream_id: metadata.stream_id.clone(),
+                        sealed_file: SealedFile::new(
+                            "in-memory".into(),
+                            expected_bytes_consumed * 2,
+                            expected_bytes_consumed * 2,
+                            2,
+                            expected_stream_state.offsets_consumed.clone(),
+                            now
+                        ),
                         retries: 3
                     }
                 ]
@@ -563,13 +628,7 @@ mod test {
             let topic_id = make_topic_id("topic-a", 1);
 
             let actual_responses: Vec<Response> = sm
-                .handle_inner(
-                    Request::ProcessRecord {
-                        record: record.clone(),
-                        serializer,
-                    },
-                    || now,
-                )
+                .handle_inner(Request::ProcessRecord(record.clone()), || now)
                 .collect();
 
             let actual_stream_state = sm.streams.get(&metadata.stream_id).unwrap().clone();
@@ -590,7 +649,9 @@ mod test {
 
             assert_eq!(
                 actual_responses,
-                vec![Response::WriteFile(metadata.stream_id.clone())]
+                vec![Response::RecordConsumed {
+                    payload_size: expected_bytes_consumed
+                }]
             );
 
             assert_eq!(sm.offsets_watermark, expected_watermark);
@@ -617,13 +678,7 @@ mod test {
             let record = make_record("topic-a", 0, 0, None);
 
             let actual_responses: Vec<Response> = sm
-                .handle_inner(
-                    Request::ProcessRecord {
-                        record: record.clone(),
-                        serializer: &mut JsonSerializer::new(),
-                    },
-                    || now,
-                )
+                .handle_inner(Request::ProcessRecord(record.clone()), || now)
                 .collect();
 
             let metadata = sm.cache.get_or_create_record_metadata(&record).unwrap();
@@ -658,13 +713,7 @@ mod test {
             let record = make_record("missing-topic", 0, 0, None);
 
             let actual_responses: Vec<Response> = sm
-                .handle_inner(
-                    Request::ProcessRecord {
-                        record: record.clone(),
-                        serializer: &mut JsonSerializer::new(),
-                    },
-                    || Instant::now(),
-                )
+                .handle_inner(Request::ProcessRecord(record.clone()), || Instant::now())
                 .collect();
 
             assert_eq!(sm.streams.len(), 0);

@@ -25,10 +25,6 @@ impl JsonSerializer {
         }
     }
 
-    pub fn get_payload(&self) -> &[u8] {
-        &self.buf
-    }
-
     pub fn serialize<M: Message>(
         &mut self,
         record: &M,

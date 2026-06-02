@@ -31,21 +31,16 @@ type S3UploadPool = FuturesUnordered<BoxFuture>;
 
 pub struct Sink;
 impl Sink {
-    pub async fn start<U: Uploader>(config: &SinkConfig, uploader: U) -> Result<()> {
-        info!("initializing FileRegistry");
-        let mut file_registry = FileRegistry::new(
-            &config.files.scratch_directory,
-            config.files.compression_level,
-        );
-
+    pub async fn start<U, F>(config: &SinkConfig, uploader: U, file_registry: F) -> Result<()>
+    where
+        U: Uploader,
+        F: FileRegistry,
+    {
         info!("initializing S3UploadPool");
         let mut upload_pool: S3UploadPool = FuturesUnordered::new();
 
         info!("initializing TimerInterrupts");
         let mut timer_interrupts = TimerInterrupts::new(config);
-
-        info!("initializing JsonSerializer");
-        let mut serializer = JsonSerializer::new();
 
         info!("initializing ShutdownHandler");
         let mut shutdown = std::pin::pin!(Self::shutdown_signal());
@@ -60,7 +55,11 @@ impl Sink {
             max_uploads_retry: config.uploads.max_uploads_retry,
             target_file_size_b: config.files.target_file_size_b,
         };
-        let mut state_machine = StateMachine::new(&config.kafka.input_topics, state_machine_config);
+        let mut state_machine = StateMachine::new(
+            &config.kafka.input_topics,
+            file_registry,
+            state_machine_config,
+        );
 
         info!("initializing RebalanceChannel");
         let (rebalance_tx, mut rebalance_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -91,47 +90,32 @@ impl Sink {
                 // _ = timer_interrupts.fairness_scheduler_tick.tick() => Request::FairnessSchedulerTick,
 
                 // 5. process Kafka record
-                maybe_next_record = consumer.recv() => Request::ProcessRecord { record: maybe_next_record?, serializer:  &mut serializer},
+                maybe_next_record = consumer.recv() => Request::ProcessRecord(maybe_next_record?),
 
                 // 6. shutdown signal
                 _ = &mut shutdown => Request::ShutdownSignal,
             };
 
-            // check rebalance assignment channel
-            Self::handle_rebalance(&mut rebalance_rx, &mut state_machine)?;
+            // check rebalance assignment channel and process any rebalances
+            while let Ok(partitions_assigned) = rebalance_rx.try_recv() {
+                let _ = state_machine
+                    .handle::<BorrowedMessage>(Request::PartitionsAssigned(partitions_assigned));
+            }
 
             for response in state_machine.handle(request) {
                 match response {
-                    Response::WriteFile(stream_id) => {
-                        let payload = serializer.get_payload();
-
-                        stats.inc_bytes_consumed(payload.len() as u64);
-
-                        file_registry.write_all(stream_id, payload)?
+                    Response::RecordConsumed { payload_size } => {
+                        stats.inc_bytes_consumed(payload_size);
                     }
 
-                    Response::SealAndUpload {
-                        id,
-                        bytes_consumed,
-                        records_consumed,
-                        offsets_consumed,
-                        created_at,
+                    Response::FileToUpload {
+                        stream_id,
+                        sealed_file,
                         retries,
                     } => {
                         stats.inc_files_sealed();
 
-                        let active_file = file_registry.seal(&id)?;
-
-                        let sealed_file = SealedFile::new(
-                            active_file,
-                            bytes_consumed,
-                            records_consumed,
-                            offsets_consumed,
-                            created_at,
-                        );
-
-                        let object_key = S3Upload::partition_spec(&id);
-
+                        let object_key = S3Upload::partition_spec(&stream_id);
                         let to_upload = ToUpload::new(object_key, sealed_file, retries);
 
                         upload_pool.push(uploader.upload(to_upload));
@@ -145,10 +129,7 @@ impl Sink {
                     }
 
                     Response::CommitAsync(tpl) => {
-                        stats.print_report(
-                            file_registry.active_file_count(),
-                            upload_pool.len() as u64,
-                        );
+                        stats.print_report(upload_pool.len() as u64);
 
                         Self::handle_commit(&tpl, &consumer, CommitMode::Async)?
                     }
@@ -172,7 +153,7 @@ impl Sink {
 
         Self::drain_and_shutdown(&consumer, &mut state_machine, &mut upload_pool).await?;
 
-        stats.print_report(file_registry.active_file_count(), upload_pool.len() as u64);
+        stats.print_report(upload_pool.len() as u64);
 
         Ok(())
     }
@@ -189,9 +170,9 @@ impl Sink {
         }
     }
 
-    async fn drain_and_shutdown(
+    async fn drain_and_shutdown<F: FileRegistry>(
         consumer: &StreamConsumer<CustomContext>,
-        state_machine: &mut StateMachine,
+        state_machine: &mut StateMachine<F>,
         upload_pool: &mut FuturesUnordered<BoxFuture>,
     ) -> Result<()> {
         info!("draining upload pool and shutting down");
@@ -220,17 +201,6 @@ impl Sink {
             }
         }
 
-        Ok(())
-    }
-
-    fn handle_rebalance(
-        rx: &mut UnboundedReceiver<Vec<(String, i32)>>,
-        state_machine: &mut StateMachine,
-    ) -> Result<()> {
-        while let Ok(partitions_assigned) = rx.try_recv() {
-            let _ = state_machine
-                .handle::<BorrowedMessage>(Request::PartitionsAssigned(partitions_assigned));
-        }
         Ok(())
     }
 

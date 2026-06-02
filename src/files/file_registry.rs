@@ -1,4 +1,10 @@
-use crate::{Result, data_model::StreamId, error::SinkError, files::file_io::ActiveFile};
+use crate::{
+    Result,
+    data_model::StreamId,
+    envelopes::ClosedFile,
+    error::SinkError,
+    files::{FileRegistry, file_io::ActiveFile},
+};
 use std::{
     collections::{HashMap, hash_map::Entry},
     path::{Path, PathBuf},
@@ -8,39 +14,21 @@ use std::{
 Registry of all active files (i.e. ActiveFile) we have in our sink at any given point in time.
 
 There is one type:
-1. FileRegistry, contains all active files and a couple of wrapper methods around ActiveFile. The event loop interacts with the FileRegistry directly and the FileRegistry interacts with the active files.
+1. DiskFileRegistry, contains all active files and a couple of wrapper methods around ActiveFile.
 */
 
-pub struct FileRegistry {
+pub struct DiskFileRegistry {
     directory: PathBuf,
     compression_level: i32,
     files: HashMap<StreamId, ActiveFile>,
 }
-impl FileRegistry {
+impl DiskFileRegistry {
     pub fn new(directory: &Path, compression_level: i32) -> Self {
-        FileRegistry {
+        DiskFileRegistry {
             directory: directory.to_path_buf(),
             compression_level,
             files: HashMap::new(),
         }
-    }
-
-    pub fn seal(&mut self, id: &StreamId) -> Result<ActiveFile> {
-        let mut file = self
-            .files
-            .remove(id)
-            .ok_or_else(|| self.file_not_found("seal", id))?;
-        file.finalize()?;
-        Ok(file)
-    }
-
-    pub fn write_all(&mut self, id: StreamId, bytes: &[u8]) -> Result<()> {
-        let file = self.get_mut_active_file_or_create(id)?;
-        file.write_all(bytes)
-    }
-
-    pub fn active_file_count(&self) -> u64 {
-        self.files.len() as u64
     }
 
     fn get_mut_active_file_or_create(&mut self, id: StreamId) -> Result<&mut ActiveFile> {
@@ -52,9 +40,30 @@ impl FileRegistry {
             }
         })
     }
+}
 
-    fn file_not_found(&self, method: &str, id: &StreamId) -> SinkError {
-        SinkError::FileRegistry(format!("{method}: active file '{id}' not found"))
+impl FileRegistry for DiskFileRegistry {
+    fn write_all(&mut self, id: StreamId, bytes: &[u8]) -> Result<()> {
+        let file = self.get_mut_active_file_or_create(id)?;
+        file.write_all(bytes)
+    }
+
+    fn close(&mut self, id: &StreamId) -> Result<ClosedFile> {
+        let mut file = self
+            .files
+            .remove(id)
+            .ok_or_else(|| SinkError::FileRegistry(format!("active file '{id}' not found")))?;
+
+        file.finalize()?;
+
+        let compressed_size_b = file.compressed_size_b();
+        let path = file.path();
+
+        Ok(ClosedFile::new(path, compressed_size_b))
+    }
+
+    fn active_file_count(&self) -> u64 {
+        self.files.len() as u64
     }
 }
 
@@ -69,7 +78,7 @@ mod test {
     fn test_initial_state() {
         let dir = TempDir::new().unwrap();
 
-        let registry = FileRegistry::new(dir.path(), 3);
+        let registry = DiskFileRegistry::new(dir.path(), 3);
 
         assert_eq!(registry.active_file_count(), 0);
     }
@@ -78,7 +87,7 @@ mod test {
     fn test_write_to_non_existing_stream() {
         let dir = TempDir::new().unwrap();
 
-        let mut registry = FileRegistry::new(dir.path(), 3);
+        let mut registry = DiskFileRegistry::new(dir.path(), 3);
 
         let stream_id = StreamId(Rc::from("test-stream"));
 
@@ -95,7 +104,7 @@ mod test {
     fn test_write_to_existing_stream() {
         let dir = TempDir::new().unwrap();
 
-        let mut registry = FileRegistry::new(dir.path(), 3);
+        let mut registry = DiskFileRegistry::new(dir.path(), 3);
 
         let stream_id = StreamId(Rc::from("test-stream"));
 
@@ -116,7 +125,7 @@ mod test {
     fn test_write_to_multiple_streams() {
         let dir = TempDir::new().unwrap();
 
-        let mut registry = FileRegistry::new(dir.path(), 3);
+        let mut registry = DiskFileRegistry::new(dir.path(), 3);
 
         let input = b"first line\nsecond line\nthird line\n";
 
@@ -138,5 +147,7 @@ mod test {
     }
 
     #[test]
-    fn test_seal_file() {}
+    fn test_close_file() {
+        assert!(false)
+    }
 }
