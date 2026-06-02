@@ -550,6 +550,9 @@ mod test {
         use super::*;
 
         #[test]
+        fn test_process_records_for_different_stream() {}
+
+        #[test]
         fn test_process_records_for_same_stream() {
             // set-up
             let now = Instant::now();

@@ -24,7 +24,7 @@ pub struct FileConfig {
 
 pub struct TimersConfig {
     pub commit_tick_ms: u64, // frequency at which to commit offsets back to Kafka
-    pub fairness_scheduler_tick_ms: u64, // frequency at which to review topic consumption budget
+    // pub fairness_scheduler_tick_ms: u64, // frequency at which to review topic consumption budget
 }
 
 pub struct UploadConfig {

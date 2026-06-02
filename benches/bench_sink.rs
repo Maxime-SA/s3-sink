@@ -60,7 +60,7 @@ fn get_bench_config() -> SinkConfig {
 
     let timers_config = TimersConfig {
         commit_tick_ms: 15_000,
-        fairness_scheduler_tick_ms: 10_000_000,
+        // fairness_scheduler_tick_ms: 10_000_000,
     };
 
     let files_config = FileConfig {

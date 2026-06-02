@@ -52,7 +52,7 @@ fn get_config() -> SinkConfig {
 
     let timers_config = TimersConfig {
         commit_tick_ms: 30000,
-        fairness_scheduler_tick_ms: 1000,
+        // fairness_scheduler_tick_ms: 1000,
     };
 
     let files_config = FileConfig {
