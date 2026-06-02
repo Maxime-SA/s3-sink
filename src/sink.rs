@@ -17,7 +17,6 @@ use tracing::{error, info};
 
 /*
 Todo:
-- Unit tests
 - Separate recoverable from unrecoverable errors
 - Backpressure for in-flight uploads, local files disk space, offsets in
 registry, ...
@@ -200,9 +199,4 @@ impl Sink {
         error!("fatal error occurred in StateMachine: {sink_error:?}");
         Err(sink_error)
     }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
 }

@@ -906,6 +906,13 @@ mod test {
         use super::*;
         use rdkafka::message::BorrowedMessage;
 
+        fn sort_responses_key(r: &Response) -> String {
+            match r {
+                Response::FileToUpload { stream_id, .. } => stream_id.0.to_string(),
+                _ => String::new(),
+            }
+        }
+
         #[test]
         fn test_only_include_streams_before_or_on_cutoff() {
             let now = Instant::now();
@@ -960,7 +967,7 @@ mod test {
                 .insert(make_topic_id("topic-c", 2), vec![100, 101, 102]);
 
             // build expected responses
-            let expected_responses = vec![
+            let mut expected_responses = vec![
                 Response::FileToUpload {
                     stream_id: stream_before_id.clone(),
                     sealed_file: SealedFile::new(
@@ -993,9 +1000,13 @@ mod test {
             sm.streams
                 .insert(stream_after_id.clone(), stream_after.clone());
 
-            let actual_responses: Vec<Response> = sm
+            let mut actual_responses: Vec<Response> = sm
                 .handle_inner::<BorrowedMessage>(Request::UploadTick, || now)
                 .collect();
+
+            // sort to get deterministic assert
+            actual_responses.sort_by_key(sort_responses_key);
+            expected_responses.sort_by_key(sort_responses_key);
 
             // stream_before and stream_at have been closed and uploaded
             assert_eq!(actual_responses, expected_responses);

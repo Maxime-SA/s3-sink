@@ -21,12 +21,22 @@ uuid = {version = "1.23.1", features = ["v4"] }
 zstd = "0.13.3"
 
 [[bin]]
+name = "s3-sink"
+path = "src/bin/main.rs"
+test = false
+
+[[bin]]
 name = "bench-producer"
 path = "benches/producer.rs"
+test = false
 
 [[bin]]
 name = "bench-sink"
 path = "benches/bench_sink.rs"
+test = false
+
+[lib]
+doctest = false
 
 [dev-dependencies]
 tempfile = "3.27.0"

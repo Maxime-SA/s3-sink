@@ -163,4 +163,59 @@ mod test {
 
         assert_eq!(metadata, None);
     }
+
+    #[test]
+    fn test_stream_id_memoization_same_record() {
+        let input_topics = vec![(
+            TopicConfig {
+                decoder: RecordDecoder::JsonSchemaDecoder,
+                router: RouterStrategy::TopicVersion,
+            },
+            vec![TopicName(Rc::from("topic-a"))],
+        )];
+
+        let message = make_owned_message(Some("topic-a"), None, None, None, None);
+
+        let mut cache = Cache::new(&input_topics);
+
+        let first = cache.get_or_create_record_metadata(&message).unwrap();
+
+        let second = cache.get_or_create_record_metadata(&message).unwrap();
+
+        // same Rc pointer — no new allocation on second call
+        assert!(Rc::ptr_eq(&first.stream_id.0, &second.stream_id.0));
+
+        assert_eq!(cache.ids.len(), 1);
+    }
+
+    #[test]
+    fn test_stream_id_memoization_different_records_same_stream() {
+        let input_topics = vec![(
+            TopicConfig {
+                decoder: RecordDecoder::JsonSchemaDecoder,
+                router: RouterStrategy::TopicVersion,
+            },
+            vec![TopicName(Rc::from("topic-a"))],
+        )];
+
+        // same headers (same stream) but different partitions
+        let first_message = make_owned_message(Some("topic-a"), None, None, Some(0), None);
+
+        let second_message = make_owned_message(Some("topic-a"), None, None, Some(1), None);
+
+        let mut cache = Cache::new(&input_topics);
+
+        let first_metadata = cache.get_or_create_record_metadata(&first_message).unwrap();
+
+        let second_metadata = cache
+            .get_or_create_record_metadata(&second_message)
+            .unwrap();
+
+        assert!(Rc::ptr_eq(
+            &first_metadata.stream_id.0,
+            &second_metadata.stream_id.0
+        ));
+
+        assert_eq!(cache.ids.len(), 1);
+    }
 }

@@ -1,5 +1,9 @@
 use std::fmt;
 
+/*
+RecordDecoder knows how to extract the data payload given the bytes of a Kafka record.
+*/
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RecordDecoder {
     JsonSchemaDecoder,

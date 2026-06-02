@@ -46,6 +46,11 @@ impl JsonSerializer {
             ))
         })?;
 
+        // skip records with empty data body
+        if data_payload.is_empty() {
+            return Ok(None);
+        }
+
         self.buf.extend_from_slice(b"{\"data\":");
         self.buf.extend_from_slice(data_payload);
 
@@ -204,5 +209,173 @@ mod test {
         ));
 
         assert_eq!(expected_result, actual_result);
+    }
+
+    #[test]
+    fn test_empty_data_body_returns_none() {
+        let mut serializer = JsonSerializer::new();
+
+        // valid magic byte + schema id, but no data after header
+        let payload = vec![0x00, 0x00, 0x00, 0x00, 0x00];
+
+        let headers = make_default_owned_headers();
+
+        let message = make_owned_message(None, Some(payload), Some(headers), None, None);
+
+        let result = serializer
+            .serialize(&message, &RecordDecoder::JsonSchemaDecoder)
+            .unwrap();
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_header_with_quote_in_value_is_dropped() {
+        let mut serializer = JsonSerializer::new();
+
+        let payload = b"\"data\"";
+
+        let mut headers = rdkafka::message::OwnedHeaders::new();
+
+        headers = headers.insert(rdkafka::message::Header {
+            key: "good_key",
+            value: Some(b"good_value"),
+        });
+
+        headers = headers.insert(rdkafka::message::Header {
+            key: "bad_key",
+            value: Some(b"has\"quote"),
+        });
+
+        let message = make_owned_message(None, Some(payload.to_vec()), Some(headers), None, None);
+
+        let result = String::from_utf8(
+            serializer
+                .serialize(&message, &RecordDecoder::JsonStringDecoder)
+                .unwrap()
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result,
+            "{\"data\":\"data\",\"x-good_key\":\"good_value\"}\n"
+        );
+    }
+
+    #[test]
+    fn test_header_with_backslash_in_key_is_dropped() {
+        let mut serializer = JsonSerializer::new();
+
+        let payload = b"\"data\"";
+
+        let mut headers = rdkafka::message::OwnedHeaders::new();
+
+        headers = headers.insert(rdkafka::message::Header {
+            key: "bad\\key",
+            value: Some(b"value"),
+        });
+
+        let message = make_owned_message(None, Some(payload.to_vec()), Some(headers), None, None);
+
+        let result = String::from_utf8(
+            serializer
+                .serialize(&message, &RecordDecoder::JsonStringDecoder)
+                .unwrap()
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+
+        // header dropped entirely
+        assert_eq!(result, "{\"data\":\"data\"}\n");
+    }
+
+    #[test]
+    fn test_header_with_control_char_in_value_is_dropped() {
+        let mut serializer = JsonSerializer::new();
+
+        let payload = b"\"data\"";
+
+        let mut headers = rdkafka::message::OwnedHeaders::new();
+
+        headers = headers.insert(rdkafka::message::Header {
+            key: "key",
+            value: Some(b"has\nnewline"),
+        });
+
+        let message = make_owned_message(None, Some(payload.to_vec()), Some(headers), None, None);
+
+        let result = String::from_utf8(
+            serializer
+                .serialize(&message, &RecordDecoder::JsonStringDecoder)
+                .unwrap()
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+
+        assert_eq!(result, "{\"data\":\"data\"}\n");
+    }
+
+    #[test]
+    fn test_header_with_none_value_is_skipped() {
+        let mut serializer = JsonSerializer::new();
+
+        let payload = b"\"data\"";
+
+        let mut headers = rdkafka::message::OwnedHeaders::new();
+
+        headers = headers.insert(rdkafka::message::Header::<&[u8]> {
+            key: "null_header",
+            value: None,
+        });
+
+        headers = headers.insert(rdkafka::message::Header {
+            key: "good",
+            value: Some(b"val"),
+        });
+
+        let message = make_owned_message(None, Some(payload.to_vec()), Some(headers), None, None);
+
+        let result = String::from_utf8(
+            serializer
+                .serialize(&message, &RecordDecoder::JsonStringDecoder)
+                .unwrap()
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+
+        assert_eq!(result, "{\"data\":\"data\",\"x-good\":\"val\"}\n");
+    }
+
+    #[test]
+    fn test_buffer_cleared_between_calls() {
+        let mut serializer = JsonSerializer::new();
+
+        let payload_a = b"\"first\"";
+
+        let payload_b = b"\"second\"";
+
+        let msg_a = make_owned_message(None, Some(payload_a.to_vec()), None, None, None);
+
+        let msg_b = make_owned_message(None, Some(payload_b.to_vec()), None, None, None);
+
+        serializer
+            .serialize(&msg_a, &RecordDecoder::JsonStringDecoder)
+            .unwrap();
+
+        let result = String::from_utf8(
+            serializer
+                .serialize(&msg_b, &RecordDecoder::JsonStringDecoder)
+                .unwrap()
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+
+        assert_eq!(result, "{\"data\":\"second\"}\n");
     }
 }
