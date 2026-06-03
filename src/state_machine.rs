@@ -70,12 +70,15 @@ pub struct StateMachineConfiguration {
     pub target_file_size_b: u64,
 }
 
-pub struct StateMachine<F: FileRegistry> {
+pub struct StateMachine<F: FileRegistry, O: ObjectKey> {
     // memoization to prevent redundant allocations
     cache: Cache,
 
     // file registry
     file_registry: F,
+
+    // generate object keys before upload
+    object_key: O,
 
     // record serializer
     serializer: JsonSerializer,
@@ -100,10 +103,11 @@ pub struct StateMachine<F: FileRegistry> {
     stats: Stats,
 }
 
-impl<F: FileRegistry> StateMachine<F> {
+impl<F: FileRegistry, O: ObjectKey> StateMachine<F, O> {
     pub fn new(
         input_topics: &Vec<(TopicConfig, Vec<TopicName>)>,
         file_registry: F,
+        object_key: O,
         config: StateMachineConfiguration,
     ) -> Self {
         Self {
@@ -111,6 +115,7 @@ impl<F: FileRegistry> StateMachine<F> {
             file_registry,
             serializer: JsonSerializer::new(),
             streams: HashMap::new(),
+            object_key,
             offsets_uploaded: HashMap::new(),
             offsets_watermark: HashMap::new(),
             in_flight_uploads: 0,
@@ -452,7 +457,7 @@ mod test {
         RecordDecoder, RouterStrategy,
         test_utils::{make_owned_headers, make_owned_message},
     };
-    use rdkafka::message::OwnedMessage;
+    use rdkafka::message::{BorrowedMessage, OwnedMessage};
 
     struct InMemoryFileRegistry {
         files: HashMap<StreamId, Vec<u8>>,
@@ -483,11 +488,18 @@ mod test {
         }
     }
 
+    struct IdentityObjectKey;
+    impl ObjectKey for IdentityObjectKey {
+        fn key(stream_id: &StreamId) -> String {
+            stream_id.to_string()
+        }
+    }
+
     fn make_state_machine(
         input_topics: Option<Vec<(TopicConfig, Vec<TopicName>)>>,
         max_concurrent_uploads: Option<u64>,
         target_file_size_b: Option<u64>,
-    ) -> StateMachine<InMemoryFileRegistry> {
+    ) -> StateMachine<InMemoryFileRegistry, IdentityObjectKey> {
         let config = StateMachineConfiguration {
             max_active_file_timeout_ms: 1000,
             max_concurrent_uploads: max_concurrent_uploads.unwrap_or(3),
@@ -510,6 +522,7 @@ mod test {
         StateMachine::new(
             &input_topics.unwrap_or(default_input_topics),
             InMemoryFileRegistry::new(),
+            IdentityObjectKey,
             config,
         )
     }
@@ -904,7 +917,6 @@ mod test {
 
     mod upload_tick {
         use super::*;
-        use rdkafka::message::BorrowedMessage;
 
         fn sort_responses_key(r: &Response) -> String {
             match r {
@@ -1017,13 +1029,116 @@ mod test {
         }
     }
 
-    mod commit_tick {}
+    mod upload_completion {
+        use super::*;
 
-    mod upload_completion {}
+        #[test]
+        fn test_upload_completion_success() {
+            let mut sm = make_state_machine(None, None, None);
 
-    mod final_commit {}
+            let topic_a_0 = make_topic_id("topic-a", 0);
+            let topic_a_1 = make_topic_id("topic-a", 1);
+            let topic_b_0 = make_topic_id("topic-b", 0);
+            let topic_b_1 = make_topic_id("topic-b", 1);
+
+            let mut first_uploaded_offsets = HashMap::new();
+            first_uploaded_offsets.insert(topic_a_0.clone(), vec![0, 1, 2, 3, 4, 5]);
+            first_uploaded_offsets.insert(topic_a_1.clone(), vec![6, 7, 8]);
+            first_uploaded_offsets.insert(topic_b_0.clone(), vec![100, 101, 102]);
+            first_uploaded_offsets.insert(topic_b_1.clone(), vec![50, 51, 55]);
+
+            // first upload result
+            let expected_responses = vec![Response::DeleteFile("in-memory".into())];
+
+            sm.in_flight_uploads = 1;
+
+            let upload_result =
+                UploadResult::Success("in-memory".into(), first_uploaded_offsets.clone());
+
+            let actual_responses: Vec<Response> = sm
+                .handle::<BorrowedMessage>(Request::UploadCompletion(upload_result))
+                .collect();
+
+            assert_eq!(actual_responses, expected_responses);
+
+            assert_eq!(sm.offsets_uploaded.len(), 4);
+
+            assert_eq!(sm.in_flight_uploads, 0);
+
+            assert_eq!(
+                sm.offsets_uploaded.get(&topic_a_0).unwrap().clone(),
+                BTreeSet::from_iter(vec![0, 1, 2, 3, 4, 5])
+            );
+
+            assert_eq!(
+                sm.offsets_uploaded.get(&topic_a_1).unwrap().clone(),
+                BTreeSet::from_iter(vec![6, 7, 8])
+            );
+
+            assert_eq!(
+                sm.offsets_uploaded.get(&topic_b_0).unwrap().clone(),
+                BTreeSet::from_iter(vec![100, 101, 102])
+            );
+
+            assert_eq!(
+                sm.offsets_uploaded.get(&topic_b_1).unwrap().clone(),
+                BTreeSet::from_iter(vec![50, 51, 55])
+            );
+
+            // second upload result
+            sm.in_flight_uploads = 1;
+
+            let mut second_uploaded_offsets = HashMap::new();
+            second_uploaded_offsets.insert(topic_b_1.clone(), vec![52, 53, 54]);
+
+            let upload_result =
+                UploadResult::Success("in-memory".into(), second_uploaded_offsets.clone());
+
+            let actual_responses: Vec<Response> = sm
+                .handle::<BorrowedMessage>(Request::UploadCompletion(upload_result))
+                .collect();
+
+            assert_eq!(actual_responses, expected_responses);
+
+            assert_eq!(sm.offsets_uploaded.len(), 4);
+
+            assert_eq!(sm.in_flight_uploads, 0);
+
+            assert_eq!(
+                sm.offsets_uploaded.get(&topic_a_0).unwrap().clone(),
+                BTreeSet::from_iter(vec![0, 1, 2, 3, 4, 5])
+            );
+
+            assert_eq!(
+                sm.offsets_uploaded.get(&topic_a_1).unwrap().clone(),
+                BTreeSet::from_iter(vec![6, 7, 8])
+            );
+
+            assert_eq!(
+                sm.offsets_uploaded.get(&topic_b_0).unwrap().clone(),
+                BTreeSet::from_iter(vec![100, 101, 102])
+            );
+
+            assert_eq!(
+                sm.offsets_uploaded.get(&topic_b_1).unwrap().clone(),
+                BTreeSet::from_iter(vec![50, 51, 52, 53, 54, 55])
+            );
+        }
+
+        #[test]
+        fn test_upload_completion_failure_with_retry() {
+            let mut sm = make_state_machine(None, None, None);
+        }
+
+        #[test]
+        fn test_upload_completion_failure_without_retry() {}
+    }
 
     mod partition_assignment {}
 
     mod shutdown_signal {}
+
+    mod final_commit {}
+
+    mod commit_tick {}
 }

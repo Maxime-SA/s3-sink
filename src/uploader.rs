@@ -1,7 +1,10 @@
 mod mock_uploader;
 mod s3_uploader;
 
-use crate::envelopes::{ToUpload, UploadResult};
+use crate::{
+    data_model::StreamId,
+    envelopes::{ToUpload, UploadResult},
+};
 pub use mock_uploader::MockUploader;
 pub use s3_uploader::S3Upload;
 use std::pin::Pin;
