@@ -6,7 +6,7 @@ mod error;
 mod files;
 mod json_serializer;
 mod kafka_consumer;
-mod object_key;
+mod key_generator;
 mod record;
 mod sink;
 mod state_machine;

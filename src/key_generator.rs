@@ -5,14 +5,14 @@ use crate::{RouterStrategy, data_model::StreamId};
 /*
 Trait for generating an object key given a StreamId.
 */
-pub trait ObjectKey {
-    fn key(stream_id: &StreamId) -> String;
+pub trait KeyGenerator {
+    fn key(&self, stream_id: &StreamId) -> String;
 }
 
 /*
 Struct representing concrete S3 partitioner.
 */
-struct S3Partitioner;
+pub struct S3Partitioner;
 
 impl S3Partitioner {
     fn key_inner(id: &StreamId, now: DateTime<Utc>, uuid: &str) -> String {
@@ -31,8 +31,8 @@ impl S3Partitioner {
     }
 }
 
-impl ObjectKey for S3Partitioner {
-    fn key(stream_id: &StreamId) -> String {
+impl KeyGenerator for S3Partitioner {
+    fn key(&self, stream_id: &StreamId) -> String {
         Self::key_inner(
             stream_id,
             chrono::Utc::now(),
@@ -48,7 +48,7 @@ mod test {
     use std::rc::Rc;
 
     #[test]
-    fn test_partition_spec() {
+    fn test_s3_partitioner() {
         let first_stream_id = StreamId(Rc::from(format!(
             "schema_name{}schema_version",
             RouterStrategy::DELIMITER
@@ -61,13 +61,13 @@ mod test {
             RouterStrategy::DELIMITER
         )));
 
-        let first_actual_result = S3Partitioner::partition_spec_inner(
+        let first_actual_result = S3Partitioner::key_inner(
             &first_stream_id,
             Utc.with_ymd_and_hms(2026, 5, 29, 14, 30, 0).unwrap(),
             "1234",
         );
 
-        let second_actual_result = S3Partitioner::partition_spec_inner(
+        let second_actual_result = S3Partitioner::key_inner(
             &second_stream_id,
             Utc.with_ymd_and_hms(2026, 5, 29, 14, 30, 15).unwrap(),
             "5678",

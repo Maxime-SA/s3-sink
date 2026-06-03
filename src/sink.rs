@@ -1,11 +1,11 @@
-use crate::envelopes::ToUpload;
 use crate::error::SinkError;
 use crate::files::FileRegistry;
 use crate::kafka_consumer::{CustomContext, init_kafka_consumer};
+use crate::key_generator::{KeyGenerator, S3Partitioner};
 use crate::state_machine::{Request, Response, StateMachine, StateMachineConfiguration};
 use crate::timer_interrupts::TimerInterrupts;
 use crate::uploader::Uploader;
-use crate::{BoxFuture, Result, S3Upload, SinkConfig};
+use crate::{BoxFuture, Result, SinkConfig};
 use futures::stream::{FuturesUnordered, StreamExt};
 use rdkafka::TopicPartitionList;
 use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
@@ -57,6 +57,7 @@ impl Sink {
         let mut state_machine = StateMachine::new(
             &config.kafka.input_topics,
             file_registry,
+            S3Partitioner,
             state_machine_config,
         );
 
@@ -99,20 +100,8 @@ impl Sink {
                 match response {
                     Response::RecordConsumed => (),
 
-                    Response::FileToUpload {
-                        stream_id,
-                        sealed_file,
-                        max_uploads_retry,
-                    } => {
-                        let object_key = S3Upload::partition_spec(&stream_id);
-
-                        let to_upload = ToUpload::new(object_key, sealed_file, max_uploads_retry);
-
+                    Response::ReadyForUpload(to_upload) => {
                         upload_pool.push(uploader.upload(to_upload));
-                    }
-
-                    Response::RetryUpload(to_upload) => {
-                        upload_pool.push(uploader.upload(to_upload))
                     }
 
                     Response::CommitAsync(tpl) => {
@@ -151,9 +140,9 @@ impl Sink {
         }
     }
 
-    async fn drain_and_shutdown<F: FileRegistry>(
+    async fn drain_and_shutdown<F: FileRegistry, K: KeyGenerator>(
         consumer: &StreamConsumer<CustomContext>,
-        state_machine: &mut StateMachine<F>,
+        state_machine: &mut StateMachine<F, K>,
         upload_pool: &mut FuturesUnordered<BoxFuture>,
     ) -> Result<()> {
         info!("draining upload pool and shutting down");

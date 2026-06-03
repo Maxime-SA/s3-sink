@@ -6,6 +6,7 @@ use crate::{
     error::SinkError,
     files::FileRegistry,
     json_serializer::JsonSerializer,
+    key_generator::KeyGenerator,
     stats::Stats,
 };
 use rdkafka::{Message, TopicPartitionList};
@@ -50,12 +51,7 @@ pub enum Request<M: Message> {
 #[derive(PartialEq, Debug)]
 pub enum Response {
     RecordConsumed,
-    FileToUpload {
-        stream_id: StreamId,
-        sealed_file: SealedFile,
-        max_uploads_retry: u64,
-    },
-    RetryUpload(ToUpload),
+    ReadyForUpload(ToUpload),
     CommitAsync(TopicPartitionList),
     CommitSync(TopicPartitionList),
     DeleteFile(PathBuf),
@@ -70,7 +66,7 @@ pub struct StateMachineConfiguration {
     pub target_file_size_b: u64,
 }
 
-pub struct StateMachine<F: FileRegistry, O: ObjectKey> {
+pub struct StateMachine<F: FileRegistry, K: KeyGenerator> {
     // memoization to prevent redundant allocations
     cache: Cache,
 
@@ -78,7 +74,7 @@ pub struct StateMachine<F: FileRegistry, O: ObjectKey> {
     file_registry: F,
 
     // generate object keys before upload
-    object_key: O,
+    key_generator: K,
 
     // record serializer
     serializer: JsonSerializer,
@@ -103,11 +99,11 @@ pub struct StateMachine<F: FileRegistry, O: ObjectKey> {
     stats: Stats,
 }
 
-impl<F: FileRegistry, O: ObjectKey> StateMachine<F, O> {
+impl<F: FileRegistry, K: KeyGenerator> StateMachine<F, K> {
     pub fn new(
         input_topics: &Vec<(TopicConfig, Vec<TopicName>)>,
         file_registry: F,
-        object_key: O,
+        key_generator: K,
         config: StateMachineConfiguration,
     ) -> Self {
         Self {
@@ -115,7 +111,7 @@ impl<F: FileRegistry, O: ObjectKey> StateMachine<F, O> {
             file_registry,
             serializer: JsonSerializer::new(),
             streams: HashMap::new(),
-            object_key,
+            key_generator,
             offsets_uploaded: HashMap::new(),
             offsets_watermark: HashMap::new(),
             in_flight_uploads: 0,
@@ -188,6 +184,7 @@ impl<F: FileRegistry, O: ObjectKey> StateMachine<F, O> {
                 &mut self.file_registry,
                 &mut self.responses,
                 &mut self.in_flight_uploads,
+                &self.key_generator,
                 self.config.max_uploads_retry,
             );
         });
@@ -266,6 +263,7 @@ impl<F: FileRegistry, O: ObjectKey> StateMachine<F, O> {
                         &mut self.file_registry,
                         &mut self.responses,
                         &mut self.in_flight_uploads,
+                        &self.key_generator,
                         self.config.max_uploads_retry,
                     );
                 }
@@ -303,6 +301,7 @@ impl<F: FileRegistry, O: ObjectKey> StateMachine<F, O> {
                     &mut self.file_registry,
                     &mut self.responses,
                     &mut self.in_flight_uploads,
+                    &self.key_generator,
                     self.config.max_uploads_retry,
                 );
             })
@@ -317,8 +316,9 @@ impl<F: FileRegistry, O: ObjectKey> StateMachine<F, O> {
                 self.stats.inc_failure_uploads();
 
                 let response = if to_upload.retries() > 0 {
-                    Response::RetryUpload(to_upload.decrement())
+                    Response::ReadyForUpload(to_upload.decrement())
                 } else {
+                    self.in_flight_uploads -= 1;
                     Response::Fatal(SinkError::S3Upload(
                         "maximum number of retries reached for S3 upload".into(),
                     ))
@@ -351,6 +351,7 @@ impl<F: FileRegistry, O: ObjectKey> StateMachine<F, O> {
         file_registry: &mut F,
         responses: &mut Vec<Response>,
         in_flight_uploads: &mut u64,
+        key_genertor: &K,
         max_uploads_retry: u64,
     ) {
         let (path, compressed_size_b) = match file_registry.close(&stream_id) {
@@ -372,11 +373,11 @@ impl<F: FileRegistry, O: ObjectKey> StateMachine<F, O> {
             stream_state.created_at,
         );
 
-        responses.push(Response::FileToUpload {
-            stream_id,
-            sealed_file,
-            max_uploads_retry,
-        })
+        let object_key = key_genertor.key(&stream_id);
+
+        let to_upload = ToUpload::new(object_key, sealed_file, max_uploads_retry);
+
+        responses.push(Response::ReadyForUpload(to_upload));
     }
 
     fn make_topic_partition_list(
@@ -488,9 +489,10 @@ mod test {
         }
     }
 
-    struct IdentityObjectKey;
-    impl ObjectKey for IdentityObjectKey {
-        fn key(stream_id: &StreamId) -> String {
+    struct IdentityKeyGenerator;
+
+    impl KeyGenerator for IdentityKeyGenerator {
+        fn key(&self, stream_id: &StreamId) -> String {
             stream_id.to_string()
         }
     }
@@ -499,7 +501,7 @@ mod test {
         input_topics: Option<Vec<(TopicConfig, Vec<TopicName>)>>,
         max_concurrent_uploads: Option<u64>,
         target_file_size_b: Option<u64>,
-    ) -> StateMachine<InMemoryFileRegistry, IdentityObjectKey> {
+    ) -> StateMachine<InMemoryFileRegistry, IdentityKeyGenerator> {
         let config = StateMachineConfiguration {
             max_active_file_timeout_ms: 1000,
             max_concurrent_uploads: max_concurrent_uploads.unwrap_or(3),
@@ -522,7 +524,7 @@ mod test {
         StateMachine::new(
             &input_topics.unwrap_or(default_input_topics),
             InMemoryFileRegistry::new(),
-            IdentityObjectKey,
+            IdentityKeyGenerator,
             config,
         )
     }
@@ -636,9 +638,9 @@ mod test {
                 actual_responses,
                 vec![
                     Response::RecordConsumed,
-                    Response::FileToUpload {
-                        stream_id: metadata.stream_id.clone(),
-                        sealed_file: SealedFile::new(
+                    Response::ReadyForUpload(ToUpload::new(
+                        IdentityKeyGenerator.key(&metadata.stream_id),
+                        SealedFile::new(
                             "in-memory".into(),
                             expected_bytes_consumed * 2,
                             expected_bytes_consumed * 2,
@@ -646,8 +648,8 @@ mod test {
                             expected_stream_state.offsets_consumed.clone(),
                             now
                         ),
-                        max_uploads_retry: 3
-                    }
+                        3
+                    ))
                 ]
             );
 
@@ -918,11 +920,14 @@ mod test {
     mod upload_tick {
         use super::*;
 
-        fn sort_responses_key(r: &Response) -> String {
-            match r {
-                Response::FileToUpload { stream_id, .. } => stream_id.0.to_string(),
-                _ => String::new(),
-            }
+        fn sort_responses(responses: &mut Vec<Response>) {
+            responses.sort_by(|a, b| {
+                let key = |r: &Response| match r {
+                    Response::ReadyForUpload(to_upload) => to_upload.object_key().to_string(),
+                    _ => String::new(),
+                };
+                key(a).cmp(&key(b))
+            });
         }
 
         #[test]
@@ -980,9 +985,9 @@ mod test {
 
             // build expected responses
             let mut expected_responses = vec![
-                Response::FileToUpload {
-                    stream_id: stream_before_id.clone(),
-                    sealed_file: SealedFile::new(
+                Response::ReadyForUpload(ToUpload::new(
+                    IdentityKeyGenerator.key(&stream_before_id.clone()),
+                    SealedFile::new(
                         "in-memory".into(),
                         1500,
                         1500,
@@ -990,11 +995,11 @@ mod test {
                         stream_before.offsets_consumed.clone(),
                         stream_before.created_at,
                     ),
-                    max_uploads_retry: 3,
-                },
-                Response::FileToUpload {
-                    stream_id: stream_at_id.clone(),
-                    sealed_file: SealedFile::new(
+                    3,
+                )),
+                Response::ReadyForUpload(ToUpload::new(
+                    IdentityKeyGenerator.key(&stream_at_id.clone()),
+                    SealedFile::new(
                         "in-memory".into(),
                         10,
                         10,
@@ -1002,8 +1007,8 @@ mod test {
                         stream_at.offsets_consumed.clone(),
                         stream_at.created_at,
                     ),
-                    max_uploads_retry: 3,
-                },
+                    3,
+                )),
             ];
 
             // insert test streams in StateMachine
@@ -1017,8 +1022,8 @@ mod test {
                 .collect();
 
             // sort to get deterministic assert
-            actual_responses.sort_by_key(sort_responses_key);
-            expected_responses.sort_by_key(sort_responses_key);
+            sort_responses(&mut actual_responses);
+            sort_responses(&mut expected_responses);
 
             // stream_before and stream_at have been closed and uploaded
             assert_eq!(actual_responses, expected_responses);
@@ -1128,10 +1133,60 @@ mod test {
         #[test]
         fn test_upload_completion_failure_with_retry() {
             let mut sm = make_state_machine(None, None, None);
+
+            let now = Instant::now();
+
+            let to_upload = ToUpload::new(
+                "key".into(),
+                SealedFile::new("in-memory".into(), 100, 50, 5, HashMap::new(), now),
+                3,
+            );
+
+            sm.in_flight_uploads = 1;
+
+            let actual_response: Vec<Response> = sm
+                .handle::<BorrowedMessage>(Request::UploadCompletion(UploadResult::failure(
+                    to_upload.clone(),
+                    SinkError::S3Upload("failed upload".into()),
+                )))
+                .collect();
+
+            let expected_response = vec![Response::ReadyForUpload(to_upload.decrement())];
+
+            assert_eq!(actual_response, expected_response);
+
+            assert_eq!(sm.in_flight_uploads, 1);
         }
 
         #[test]
-        fn test_upload_completion_failure_without_retry() {}
+        fn test_upload_completion_failure_without_retry() {
+            let mut sm = make_state_machine(None, None, None);
+
+            let now = Instant::now();
+
+            let to_upload = ToUpload::new(
+                "key".into(),
+                SealedFile::new("in-memory".into(), 100, 50, 5, HashMap::new(), now),
+                0,
+            );
+
+            sm.in_flight_uploads = 1;
+
+            let actual_response: Vec<Response> = sm
+                .handle::<BorrowedMessage>(Request::UploadCompletion(UploadResult::failure(
+                    to_upload.clone(),
+                    SinkError::S3Upload("failed upload".into()),
+                )))
+                .collect();
+
+            let expected_response = vec![Response::Fatal(SinkError::S3Upload(
+                "maximum number of retries reached for S3 upload".into(),
+            ))];
+
+            assert_eq!(actual_response, expected_response);
+
+            assert_eq!(sm.in_flight_uploads, 0);
+        }
     }
 
     mod partition_assignment {}

@@ -19,7 +19,7 @@ impl UploadResult {
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub struct ToUpload {
     object_key: String,
     file: SealedFile,
@@ -71,7 +71,7 @@ impl ToUpload {
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub struct SealedFile {
     path: PathBuf,
     raw_size_b: u64,
