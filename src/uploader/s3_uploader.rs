@@ -14,12 +14,13 @@ use aws_sdk_s3_transfer_manager::{
 pub struct S3Upload {
     client: TransferClient,
     bucket: String,
+    is_miniio: bool,
 }
 impl S3Upload {
     pub async fn new(
         region: Region,
-        endpoint_opt: Option<&str>,
         bucket: String,
+        endpoint_opt: Option<&str>,
         part_size_target_opt: Option<u64>,
         multipart_threshold_opt: Option<u64>,
         concurrency_control_opt: Option<usize>,
@@ -64,7 +65,11 @@ impl S3Upload {
 
         let client = TransferClient::new(tm_config);
 
-        S3Upload { client, bucket }
+        S3Upload {
+            client,
+            bucket,
+            is_miniio: endpoint_opt.is_some(),
+        }
     }
 }
 
@@ -72,6 +77,7 @@ impl Uploader for S3Upload {
     fn upload(&self, to_upload: ToUpload) -> BoxFuture {
         let transfer_manager = self.client.clone();
         let bucket = self.bucket.clone();
+        let is_miniio = self.is_miniio;
 
         Box::pin(async move {
             let result: Result<_> = async {
@@ -86,15 +92,23 @@ impl Uploader for S3Upload {
                     (1.0 - compressed_size_b as f64 / raw_size_b as f64) * 100.0
                 );
 
-                transfer_manager
+                let request_builder = transfer_manager
                     .upload()
                     .bucket(&bucket)
                     .key(to_upload.object_key())
                     .body(input_stream)
-                    // .server_side_encryption(aws_sdk_s3::types::ServerSideEncryption::Aes256)
                     .metadata("record_count", record_count.to_string())
                     .metadata("raw_size_bytes", raw_size_b.to_string())
-                    .metadata("compression_ratio", compression_ratio)
+                    .metadata("compression_ratio", compression_ratio);
+
+                let request_builder = if is_miniio {
+                    request_builder
+                } else {
+                    request_builder
+                        .server_side_encryption(aws_sdk_s3::types::ServerSideEncryption::Aes256)
+                };
+
+                request_builder
                     .initiate()
                     .map_err(|e| SinkError::S3Upload(e.to_string()))?
                     .join()

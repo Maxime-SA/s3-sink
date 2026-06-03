@@ -73,7 +73,7 @@ pub struct StateMachine<F: FileRegistry, K: KeyGenerator> {
     // file registry
     file_registry: F,
 
-    // generate object keys before upload
+    // generate object keys for storage
     key_generator: K,
 
     // record serializer
@@ -254,7 +254,10 @@ impl<F: FileRegistry, K: KeyGenerator> StateMachine<F, K> {
                     self.stats.inc_files_sealed();
 
                     // remove stream state
-                    let stream_state = self.streams.remove(&metadata.stream_id).unwrap();
+                    let stream_state = self
+                        .streams
+                        .remove(&metadata.stream_id)
+                        .expect("could not find stream state for upload");
 
                     // close and upload
                     Self::close_and_upload(
@@ -318,7 +321,9 @@ impl<F: FileRegistry, K: KeyGenerator> StateMachine<F, K> {
                 let response = if to_upload.retries() > 0 {
                     Response::ReadyForUpload(to_upload.decrement())
                 } else {
+                    // -1 in flight uploads
                     self.in_flight_uploads -= 1;
+
                     Response::Fatal(SinkError::S3Upload(
                         "maximum number of retries reached for S3 upload".into(),
                     ))

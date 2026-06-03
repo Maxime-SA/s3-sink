@@ -12,7 +12,6 @@ pub struct KafkaConfig {
     pub input_topics: Vec<(TopicConfig, Vec<TopicName>)>, // input topics to consume
     pub consumer_properties: Vec<(String, String)>, // consumer client properties (i.e. (key, value))
     pub region: Region,
-    pub token_lifetime_ms: i64,
     pub principal_name: String,
 }
 
@@ -28,13 +27,13 @@ pub struct TimersConfig {
 }
 
 pub struct UploadConfig {
+    pub bucket: String,                  // top-level S3 bucket where objects should go
     pub max_uploads_retry: u64, // maximum number of times to retry an upload before crashing
     pub max_concurrent_uploads: u64, // maximum number of concurrent uploads at any given point
     pub max_active_file_timeout_ms: u64, // maximum amount of time (milliseconds) that an active file can remain open
 }
 
 pub struct SinkConfig {
-    pub version: u64,
     pub kafka: KafkaConfig,
     pub timers: TimersConfig,
     pub files: FileConfig,

@@ -1,7 +1,5 @@
-use std::rc::Rc;
-
-use aws_config::Region;
 use s3_sink::*;
+use std::rc::Rc;
 use tracing::{error, info};
 
 const NUM_TOPICS: usize = 50;
@@ -55,7 +53,6 @@ fn get_bench_config() -> SinkConfig {
             .collect(),
         principal_name: "bench".into(),
         region: aws_config::Region::from_static("us-east-1"),
-        token_lifetime_ms: 0, // unused in PLAINTEXT mode
     };
 
     let timers_config = TimersConfig {
@@ -70,13 +67,13 @@ fn get_bench_config() -> SinkConfig {
     };
 
     let upload_config = UploadConfig {
+        bucket: "s3-sink-benches".into(),
         max_uploads_retry: 3,
         max_concurrent_uploads: 50,
         max_active_file_timeout_ms: 1000 * 60 * 1,
     };
 
     SinkConfig {
-        version: 1,
         kafka: kafka_config,
         files: files_config,
         timers: timers_config,
@@ -96,7 +93,17 @@ fn init_logging() {
 fn main() {
     init_logging();
 
-    std::fs::create_dir_all("/tmp/s3-sink-scratch").expect("failed to create scratch directory");
+    info!("initializing SinkConfig");
+    let config = get_bench_config();
+
+    std::fs::create_dir_all(config.files.scratch_directory.as_path())
+        .expect("failed to create scratch directory");
+
+    info!("initializing DiskFileRegistry");
+    let file_registry = DiskFileRegistry::new(
+        &config.files.scratch_directory,
+        config.files.compression_level,
+    );
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -104,17 +111,11 @@ fn main() {
         .expect("could not build Tokio runtime");
 
     runtime.block_on(async {
-        let config = get_bench_config();
-
-        let file_registry = DiskFileRegistry::new(
-            &config.files.scratch_directory,
-            config.files.compression_level,
-        );
-
+        info!("initializing S3Upload");
         let uploader = S3Upload::new(
-            Region::from_static("us-east-1"),
+            config.kafka.region.clone(),
+            config.uploads.bucket.clone(),
             Some("http://localhost:9000"),
-            "sink-output".into(),
             None,
             None,
             None,
