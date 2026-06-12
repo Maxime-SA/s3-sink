@@ -10,16 +10,20 @@ use aws_sdk_s3_transfer_manager::{
     io::InputStream,
     types::{ConcurrencyMode, PartSize},
 };
+use rand::RngExt;
+use std::time::Duration;
 
 pub struct S3Upload {
     client: TransferClient,
     bucket: String,
+    max_uploads_retry: u64,
     is_miniio: bool,
 }
 impl S3Upload {
     pub async fn new(
         region: Region,
         bucket: String,
+        max_uploads_retry: u64,
         endpoint_opt: Option<&str>,
         part_size_target_opt: Option<u64>,
         multipart_threshold_opt: Option<u64>,
@@ -68,6 +72,7 @@ impl S3Upload {
         S3Upload {
             client,
             bucket,
+            max_uploads_retry,
             is_miniio: endpoint_opt.is_some(),
         }
     }
@@ -78,8 +83,19 @@ impl Uploader for S3Upload {
         let transfer_manager = self.client.clone();
         let bucket = self.bucket.clone();
         let is_miniio = self.is_miniio;
+        let max_uploads_retry = self.max_uploads_retry;
 
         Box::pin(async move {
+            // exponential backoff - do we want to make these configurable?
+            let attempt = max_uploads_retry - to_upload.retries();
+            if attempt > 0 {
+                let max_backoff_ms = 5000u64;
+                let backoff_ms = (100 * 2u64.pow(attempt.min(6) as u32)).min(max_backoff_ms);
+                let jittered = rand::rng().random_range(0..=backoff_ms);
+                tokio::time::sleep(Duration::from_millis(jittered)).await;
+            }
+
+            // upload to S3
             let result: Result<_> = async {
                 let input_stream = InputStream::from_path(to_upload.path_ref())?;
 

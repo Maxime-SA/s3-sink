@@ -23,4 +23,4 @@ pub use error::Result;
 pub use files::DiskFileRegistry;
 pub use record::{RecordDecoder, RouterStrategy};
 pub use sink::Sink;
-pub use uploader::{BoxFuture, MockUploader, S3Upload, Uploader};
+pub use uploader::{BoxFuture, S3Upload, Uploader};

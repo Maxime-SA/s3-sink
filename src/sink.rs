@@ -9,7 +9,9 @@ use crate::{BoxFuture, Result, SinkConfig};
 use futures::stream::{FuturesUnordered, StreamExt};
 use rdkafka::TopicPartitionList;
 use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
+use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
+use rdkafka::types::RDKafkaErrorCode;
 use std::fs;
 use tokio::select;
 use tokio::signal::unix::SignalKind;
@@ -20,7 +22,6 @@ Todo:
 - Separate recoverable from unrecoverable errors
 - Backpressure for in-flight uploads, local files disk space, offsets in
 registry, ...
-- Fairness Scheduler
 */
 
 type S3UploadPool = FuturesUnordered<BoxFuture>;
@@ -45,7 +46,7 @@ impl Sink {
         let (rebalance_tx, mut rebalance_rx) = tokio::sync::mpsc::unbounded_channel();
 
         info!("initializing StreamConsumer");
-        let consumer = init_kafka_consumer(&config.kafka, rebalance_tx)?;
+        let consumer = init_kafka_consumer(&config.kafka, rebalance_tx).await?;
 
         info!("initializing StateMachine");
         let state_machine_config = StateMachineConfiguration {
@@ -71,31 +72,38 @@ impl Sink {
                  */
                 biased;
 
-                // 1. an upload to S3 has completed
-                Some(result) = upload_pool.next() => Request::UploadCompletion(result),
-
-                // 2. timer interrupt to commit offsets
-                _ = timer_interrupts.commit_tick.tick() => Request::CommitTick(consumer.assignment()?),
-
-                // 3. timer interrupt to upload any dormant files
+                // 1. timer interrupt to upload any dormant files
                 _ = timer_interrupts.upload_tick.tick() => Request::UploadTick,
 
-                // 4. timer interrupt to review topic ingestion budget
-                // _ = timer_interrupts.fairness_scheduler_tick.tick() => Request::FairnessSchedulerTick,
+                // 2. an upload to S3 has completed
+                Some(result) = upload_pool.next() => Request::UploadCompletion(result),
 
-                // 5. process Kafka record
-                maybe_next_record = consumer.recv() => Request::ProcessRecord(maybe_next_record?),
+                // 3. timer interrupt to commit offsets
+                _ = timer_interrupts.commit_tick.tick() => Request::CommitTick(consumer.assignment()?),
 
-                // 6. shutdown signal
+                // 4. process Kafka record
+                maybe_next_record = consumer.recv() => match maybe_next_record {
+                        Ok(next_record) => Request::ProcessRecord(next_record),
+                        Err(KafkaError::MessageConsumption(RDKafkaErrorCode::UnknownTopicOrPartition)) => continue,
+                        Err(error) => return Err(error.into())
+                },
+
+                // 5. shutdown signal
                 _ = &mut shutdown => Request::ShutdownSignal,
             };
 
-            // process any pending rebalances
-            while let Ok(partitions_assigned) = rebalance_rx.try_recv() {
-                let _ = state_machine
-                    .handle::<BorrowedMessage>(Request::PartitionsAssigned(partitions_assigned));
+            // process any pending partitions to revoke
+            while let Ok(partitions_to_revoke) = rebalance_rx.try_recv() {
+                for response in state_machine
+                    .handle::<BorrowedMessage>(Request::RevokePartitions(partitions_to_revoke))
+                {
+                    if let Response::DeleteFile(path_buf) = response {
+                        let _ = fs::remove_file(path_buf);
+                    }
+                }
             }
 
+            // process request & responses
             for response in state_machine.handle(request) {
                 match response {
                     Response::RecordConsumed => (),
@@ -151,9 +159,8 @@ impl Sink {
             for response in
                 state_machine.handle::<BorrowedMessage>(Request::UploadCompletion(upload_result))
             {
-                match response {
-                    Response::Fatal(sink_error) => Self::handle_fatal_error(sink_error)?,
-                    _ => (),
+                if let Response::Fatal(sink_error) = response {
+                    Self::handle_fatal_error(sink_error)?
                 }
             }
         }
@@ -162,9 +169,7 @@ impl Sink {
             state_machine.handle::<BorrowedMessage>(Request::FinalCommit(consumer.assignment()?))
         {
             match response {
-                Response::CommitSync(tpl) => {
-                    Self::handle_commit(&tpl, &consumer, CommitMode::Sync)?
-                }
+                Response::CommitSync(tpl) => Self::handle_commit(&tpl, consumer, CommitMode::Sync)?,
                 Response::Fatal(sink_error) => Self::handle_fatal_error(sink_error)?,
                 _ => (),
             }

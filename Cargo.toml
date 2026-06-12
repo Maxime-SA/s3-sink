@@ -12,11 +12,13 @@ aws-msk-iam-sasl-signer = "1.0.1"
 aws-sdk-s3 = "1.132.0"
 aws-sdk-s3-transfer-manager = "0.1.3"
 chrono = "0.4.44"
+fs2 = "0.4.3"
 futures = "0.3.32"
-rdkafka = { version = "0.39.0", features = ["tracing"] }
+rand = "0.10.1"
+rdkafka = { version = "0.39.0", features = ["tracing", "ssl", "sasl"] }
 tokio = { version = "1.52.3", features = ["macros", "rt", "time", "test-util", "signal"]}
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 uuid = {version = "1.23.1", features = ["v4"] }
 zstd = "0.13.3"
 
@@ -39,4 +41,5 @@ test = false
 doctest = false
 
 [dev-dependencies]
+prop-test = "0.1.1"
 tempfile = "3.27.0"

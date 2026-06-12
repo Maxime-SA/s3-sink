@@ -12,7 +12,7 @@ use crate::{
 use rdkafka::{Message, TopicPartitionList};
 use std::{
     borrow::Borrow,
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     path::PathBuf,
     rc::Rc,
     time::{Duration, Instant},
@@ -41,10 +41,9 @@ pub enum Request<M: Message> {
     ProcessRecord(M),
     UploadTick,
     CommitTick(TopicPartitionList),
-    // FairnessSchedulerTick,
     UploadCompletion(UploadResult),
     FinalCommit(TopicPartitionList),
-    PartitionsAssigned(Vec<(String, i32)>),
+    RevokePartitions(HashSet<(String, i32)>),
     ShutdownSignal,
 }
 
@@ -101,7 +100,7 @@ pub struct StateMachine<F: FileRegistry, K: KeyGenerator> {
 
 impl<F: FileRegistry, K: KeyGenerator> StateMachine<F, K> {
     pub fn new(
-        input_topics: &Vec<(TopicConfig, Vec<TopicName>)>,
+        input_topics: &[(TopicConfig, Vec<TopicName>)],
         file_registry: F,
         key_generator: K,
         config: StateMachineConfiguration,
@@ -122,7 +121,14 @@ impl<F: FileRegistry, K: KeyGenerator> StateMachine<F, K> {
     }
 
     pub fn handle<M: Message>(&mut self, request: Request<M>) -> std::vec::Drain<'_, Response> {
-        self.handle_inner(request, || Instant::now())
+        self.handle_inner(request, Instant::now)
+    }
+
+    fn offsets_size(&self) -> usize {
+        self.offsets_uploaded
+            .iter()
+            .fold(0, |size, next| size + next.1.len())
+            * size_of::<i64>()
     }
 
     fn handle_inner<M: Message>(
@@ -140,6 +146,7 @@ impl<F: FileRegistry, K: KeyGenerator> StateMachine<F, K> {
                 self.stats.print_report(
                     self.file_registry.active_file_count(),
                     self.in_flight_uploads,
+                    self.offsets_size(),
                 );
             }
             Request::UploadTick => self.handle_upload_tick(now()),
@@ -152,25 +159,38 @@ impl<F: FileRegistry, K: KeyGenerator> StateMachine<F, K> {
                 self.stats.print_report(
                     self.file_registry.active_file_count(),
                     self.in_flight_uploads,
+                    self.offsets_size(),
                 );
             }
-            Request::PartitionsAssigned(partitions) => self.handle_partitions_assigned(partitions),
-            Request::ShutdownSignal => {
-                self.handle_shutdown_signal();
-
-                self.stats.print_report(
-                    self.file_registry.active_file_count(),
-                    self.in_flight_uploads,
-                );
-            }
+            Request::RevokePartitions(partitions) => self.handle_revoke_partitions(partitions),
+            Request::ShutdownSignal => self.handle_shutdown_signal(),
         }
 
         self.responses.drain(..)
     }
 
-    fn handle_partitions_assigned(&mut self, partitions: Vec<(String, i32)>) {
-        for (topic_name, partition) in partitions {
-            let topic_id = TopicId(TopicName(Rc::from(topic_name)), partition);
+    fn handle_revoke_partitions(&mut self, partitions: HashSet<(String, i32)>) {
+        let revoked_topic_ids: HashSet<TopicId> = partitions
+            .iter()
+            .map(|(topic_name, partition)| {
+                TopicId(TopicName(Rc::from(topic_name.as_str())), *partition)
+            })
+            .collect();
+
+        self.streams
+            .extract_if(|_, stream_state| {
+                stream_state
+                    .offsets_consumed
+                    .keys()
+                    .all(|topic_id| revoked_topic_ids.contains(topic_id))
+            })
+            .for_each(|(stream_id, _)| {
+                if let Some(path_buf) = self.file_registry.revoke(&stream_id) {
+                    self.responses.push(Response::DeleteFile(path_buf));
+                }
+            });
+
+        for topic_id in revoked_topic_ids {
             self.offsets_watermark.remove(&topic_id);
             self.offsets_uploaded.remove(&topic_id);
         }
@@ -293,10 +313,17 @@ impl<F: FileRegistry, K: KeyGenerator> StateMachine<F, K> {
     fn handle_upload_tick(&mut self, now: Instant) {
         let cut_off = now - Duration::from_millis(self.config.max_active_file_timeout_ms);
 
+        let uploads_capacity = self
+            .config
+            .max_concurrent_uploads
+            .saturating_sub(self.in_flight_uploads);
+
         self.streams
             .extract_if(|_, state| state.created_at <= cut_off)
+            .take(uploads_capacity as usize)
             .for_each(|(stream_id, stream_state)| {
                 self.stats.inc_files_sealed();
+                self.stats.inc_dormant_files();
 
                 Self::close_and_upload(
                     stream_id,
@@ -307,7 +334,7 @@ impl<F: FileRegistry, K: KeyGenerator> StateMachine<F, K> {
                     &self.key_generator,
                     self.config.max_uploads_retry,
                 );
-            })
+            });
     }
 
     fn handle_upload_completion(&mut self, upload_result: UploadResult) {
@@ -491,6 +518,10 @@ mod test {
         fn write_all(&mut self, id: StreamId, bytes: &[u8]) -> Result<()> {
             self.files.entry(id).or_default().extend_from_slice(bytes);
             Ok(())
+        }
+
+        fn revoke(&mut self, id: &StreamId) -> Option<PathBuf> {
+            self.files.remove(id).map(|_| "in-memory".into())
         }
     }
 

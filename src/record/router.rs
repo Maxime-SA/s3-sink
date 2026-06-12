@@ -31,7 +31,10 @@ impl RouterStrategy {
         record.headers().and_then(|headers| {
             headers.iter().find_map(|header| {
                 if header.key == key {
-                    header.value.and_then(|val| str::from_utf8(val).ok())
+                    header
+                        .value
+                        .and_then(|val| str::from_utf8(val).ok())
+                        .filter(|value| !value.is_empty())
                 } else {
                     None
                 }
@@ -96,6 +99,25 @@ mod test {
         let first_actual_result = RouterStrategy::get_header(&record, "header-B");
 
         assert_eq!(first_actual_result, None);
+    }
+
+    #[test]
+    fn test_get_header_when_present_but_empty_string() {
+        let mut buf = String::new();
+
+        let headers = vec![
+            ("schema_name".into(), "".into()),
+            ("schema_version".into(), "".into()),
+        ];
+
+        let message = make_owned_message(None, None, Some(make_owned_headers(headers)), None, None);
+
+        RouterStrategy::TopicVersion.write_id(&message, &mut buf);
+
+        assert_eq!(
+            buf,
+            String::from("unknown_schema_name\x1Funknown_schema_version")
+        );
     }
 
     #[test]

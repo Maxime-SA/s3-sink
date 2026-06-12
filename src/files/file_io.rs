@@ -67,6 +67,10 @@ impl ActiveFile {
         self.writer.get_mut().flush()?;
         Ok((self.path, self.writer.get_ref().compressed_size_b))
     }
+
+    pub fn path_buf(self) -> PathBuf {
+        self.path
+    }
 }
 
 #[cfg(test)]

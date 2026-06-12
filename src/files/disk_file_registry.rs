@@ -54,11 +54,17 @@ impl FileRegistry for DiskFileRegistry {
             .remove(id)
             .ok_or_else(|| SinkError::FileRegistry(format!("active file '{id}' not found")))?;
 
-        Ok(file.close()?)
+        file.close()
     }
 
     fn active_file_count(&self) -> u64 {
         self.files.len() as u64
+    }
+
+    fn revoke(&mut self, id: &StreamId) -> Option<PathBuf> {
+        self.files
+            .remove(id)
+            .map(|active_file| active_file.path_buf())
     }
 }
 

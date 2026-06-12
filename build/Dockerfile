@@ -1,5 +1,5 @@
 # --- Stage 1: Build dependencies (cached layer) ---
-FROM rust:1.87-slim AS deps
+FROM rust:1.96-slim-bookworm AS deps
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
@@ -51,7 +51,7 @@ WORKDIR /app
 
 COPY --from=builder /app/target/release/s3-sink /app/s3-sink
 
-COPY build/bootstrap.sh /app/bootstrap.sh
+COPY bootstrap.sh /app/bootstrap.sh
 
 ENV SCRATCH_DIRECTORY=/tmp/s3-sink-scratch
 

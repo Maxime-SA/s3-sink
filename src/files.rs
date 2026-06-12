@@ -11,4 +11,6 @@ pub trait FileRegistry {
     fn write_all(&mut self, id: StreamId, bytes: &[u8]) -> Result<()>;
 
     fn active_file_count(&self) -> u64;
+
+    fn revoke(&mut self, id: &StreamId) -> Option<PathBuf>;
 }

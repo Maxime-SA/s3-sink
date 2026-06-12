@@ -14,7 +14,7 @@ pub struct Cache {
     configs: HashMap<TopicName, TopicConfig>,
 }
 impl Cache {
-    pub fn new(input_topics: &Vec<(TopicConfig, Vec<TopicName>)>) -> Self {
+    pub fn new(input_topics: &[(TopicConfig, Vec<TopicName>)]) -> Self {
         let configs = input_topics
             .iter()
             .fold(HashMap::new(), |mut acc, (config, topics)| {
