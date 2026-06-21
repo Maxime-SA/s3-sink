@@ -20,7 +20,7 @@ fn get_u64_env_var_or_panic(name: &str) -> u64 {
 fn get_config() -> SinkConfig {
     // temporary until we set-up a dynamic way to inject it
     let input_topics = {
-        let mut schema_topics = vec![];
+        let mut schema_topics: Vec<(TopicConfig, Vec<&str>)> = vec![];
 
         let mut dlq_topics = vec![];
 

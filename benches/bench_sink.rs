@@ -66,7 +66,7 @@ fn get_bench_config() -> SinkConfig {
     };
 
     let upload_config = UploadConfig {
-        bucket: "s3-sink-benches".into(),
+        bucket: "sink-output".into(),
         max_uploads_retry: 3,
         max_concurrent_uploads: 50,
         max_active_file_timeout_ms: 1000 * 60 * 1,
@@ -104,7 +104,7 @@ fn main() {
         config.files.compression_level,
     );
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("could not build Tokio runtime");
